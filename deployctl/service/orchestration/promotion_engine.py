@@ -24,9 +24,15 @@ from deployctl.adapters.exposure import ExposureAdapter
 from deployctl.adapters.placement import PlacementAdapter
 from deployctl.adapters.registry import RegistryAdapter
 from deployctl.domain.aggregate.deployment import Deployment
-from deployctl.domain.errors import DeploymentNotFoundError, PromotionError
+from deployctl.domain.errors import (
+    DeploymentNotFoundError,
+    PromotionError,
+    PromotionNotReadyError,
+)
+from deployctl.domain.readiness import ReadinessRecord, ReadinessStatus
 from deployctl.domain.state_machine import DomainStateMachine
 from deployctl.persistence.repository import DeploymentRepository
+from deployctl.service.orchestration.readiness_controller import ReadinessController
 
 
 class PromotionNotAllowedError(PromotionError):
@@ -99,6 +105,8 @@ class PromotionResult:
     reason: str
     error: str | None = None
     steps: dict[str, Any] | None = None
+    readiness: ReadinessRecord | None = None
+    readiness_status: str | None = None
 
 
 class PromotionEngine:
@@ -107,6 +115,11 @@ class PromotionEngine:
     Public surface is deliberately small so it can be tested against a
     real DeploymentRepository without requiring the rest of the vertical
     slices to be wired yet.
+
+    Promotion is gated on readiness: it requires a healthy readiness record
+    for the deployment before any promotion work is attempted. If readiness
+    has not been evaluated yet, promotion is allowed to proceed because there
+    is no evidence that the deployment is unhealthy.
     """
 
     def __init__(
@@ -118,6 +131,7 @@ class PromotionEngine:
         artifact: ArtifactAdapter,
         registry: RegistryAdapter,
         state_machine: DomainStateMachine,
+        readiness_controller: ReadinessController | None = None,
     ) -> None:
         self.deployment_repository = deployment_repository
         self.placement = placement
@@ -125,6 +139,7 @@ class PromotionEngine:
         self.artifact = artifact
         self.registry = registry
         self.state_machine = state_machine
+        self.readiness_controller = readiness_controller
 
     async def promote(self, entry: PromotionEntry) -> PromotionResult:
         """Run one promotion attempt.
@@ -160,6 +175,23 @@ class PromotionEngine:
                 current_status=previous_status,
                 target_status=target,
                 reason=entry.reason,
+            )
+
+        # Gate promotion on readiness. Promotion should not start until a
+        # deployment is known to be healthy, but it should still be allowed when
+        # readiness has simply not been evaluated yet.
+        readiness = await self._check_readiness(deployment.id)
+        if readiness is not None and readiness.status is not ReadinessStatus.ready:
+            raise PromotionNotReadyError(
+                message=(
+                    f"promotion blocked: deployment {deployment.id!r} is not ready"
+                ),
+                code="promotion_not_ready",
+                details={
+                    "deployment_id": deployment.id,
+                    "readiness_status": readiness.status.value,
+                    "readiness_observed_at": readiness.observed_at.isoformat(),
+                },
             )
 
         # Ask the domain state machine whether we can move to the target.
@@ -207,7 +239,25 @@ class PromotionEngine:
             current_status=updated.status,
             reason=entry.reason,
             steps=steps,
+            readiness=readiness,
+            readiness_status=readiness.status.value if readiness is not None else None,
         )
+
+    # ------------------------------------------------------------------
+    # Readiness gating
+    # ------------------------------------------------------------------
+
+    async def _check_readiness(self, deployment_id: str) -> ReadinessRecord | None:
+        """Return the latest readiness record if readiness is wired in.
+
+        Returns ``None`` when readiness is not wired so that older callers can
+        keep working while readiness is rolled out piece by piece.
+        """
+
+        controller = self.readiness_controller
+        if controller is None:
+            return None
+        return await controller.get_status(deployment_id=deployment_id)
 
     # ------------------------------------------------------------------
     # Adapter call sequence

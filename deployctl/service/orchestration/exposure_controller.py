@@ -20,8 +20,14 @@ from typing import Any
 
 from deployctl.adapters.exposure import ExposureAdapter
 from deployctl.domain.aggregate.deployment import Deployment
-from deployctl.domain.errors import DeploymentNotFoundError, ExposureError
+from deployctl.domain.errors import (
+    DeploymentNotFoundError,
+    ExposureError,
+    ExposureNotReadyError,
+)
+from deployctl.domain.readiness import ReadinessRecord, ReadinessStatus
 from deployctl.persistence.repository import DeploymentRepository
+from deployctl.service.orchestration.readiness_controller import ReadinessController
 
 
 @dataclass(frozen=True)
@@ -44,6 +50,8 @@ class ExposureResult:
     current_status: str
     error: str | None = None
     adapter_output: dict[str, Any] | None = None
+    readiness: ReadinessRecord | None = None
+    readiness_status: str | None = None
 
 
 def _build_exposure_error(
@@ -76,6 +84,11 @@ class ExposureController:
     Public surface is deliberately small so it can be tested against a
     real DeploymentRepository without requiring the rest of the vertical
     slices to be wired yet.
+
+    Exposure changes are gated on readiness: they require a healthy readiness
+    record before the controller will shift exposure. If readiness has not been
+    evaluated yet, the controller still allows the change because there is no
+    evidence that the deployment is unhealthy.
     """
 
     def __init__(
@@ -83,9 +96,11 @@ class ExposureController:
         *,
         deployment_repository: DeploymentRepository,
         exposure: ExposureAdapter,
+        readiness_controller: ReadinessController | None = None,
     ) -> None:
         self.deployment_repository = deployment_repository
         self.exposure = exposure
+        self.readiness_controller = readiness_controller
 
     async def shift(self, request: ExposureRequest) -> ExposureResult:
         """Run one exposure shift attempt.
@@ -102,6 +117,24 @@ class ExposureController:
 
         previous_status = deployment.status
         adapter_output: dict[str, Any] = {}
+
+        # Gate exposure changes on readiness. Exposure should not shift while a
+        # deployment is known to be unhealthy, but it may still shift when readiness
+        # has not been evaluated yet.
+        readiness = await self._check_readiness(request.deployment_id)
+        if readiness is not None and readiness.status is not ReadinessStatus.ready:
+            raise ExposureNotReadyError(
+                message=(
+                    f"exposure shift blocked: deployment {request.deployment_id!r} "
+                    f"is not ready"
+                ),
+                code="exposure_not_ready",
+                details={
+                    "deployment_id": request.deployment_id,
+                    "readiness_status": readiness.status.value,
+                    "readiness_observed_at": readiness.observed_at.isoformat(),
+                },
+            )
 
         try:
             adapter_output = self._call_exposure(request, deployment)
@@ -126,6 +159,8 @@ class ExposureController:
             successful=True,
             current_status=updated.status,
             adapter_output=adapter_output,
+            readiness=readiness,
+            readiness_status=readiness.status.value if readiness is not None else None,
         )
 
     def _call_exposure(
@@ -168,6 +203,18 @@ class ExposureController:
             )
 
         return dict(call) if isinstance(call, dict) else {}
+
+    async def _check_readiness(self, deployment_id: str) -> ReadinessRecord | None:
+        """Return the latest readiness record if readiness is wired in.
+
+        Returns ``None`` when readiness is not wired so older callers keep working
+        while readiness is rolled out piece by piece.
+        """
+
+        controller = self.readiness_controller
+        if controller is None:
+            return None
+        return await controller.get_status(deployment_id=deployment_id)
 
     def _emit_operation_log(
         self,
