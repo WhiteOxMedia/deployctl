@@ -3,6 +3,12 @@
 The tests exercise the real HTTP surface (``TestClient``), the readiness
 controller, and the SQLAlchemy readiness repository so probe evaluation and
 latest-record lookup are verified through the whole stack.
+
+The database for these tests is created by the Alembic migration chain, not by
+``Base.metadata.create_all``. That keeps the readiness contract executable
+against the same schema the production runner applies, and it lets us assert
+the migration itself (upgrade adds the readiness table, downgrade removes it)
+without relying on ORM-only fallbacks.
 """
 
 from __future__ import annotations
@@ -14,14 +20,10 @@ from datetime import UTC, datetime
 import pytest
 from fastapi.testclient import TestClient
 
-from deployctl.app.config import Config
 from deployctl.app.null_adapters import NullProbeAdapter
-from deployctl.app.server import create_app
 from deployctl.domain.readiness import ReadinessRecord, ReadinessStatus
 from deployctl.persistence.engine import create_async_engine, create_session_factory
-from deployctl.persistence.readiness_repository import (
-    SqlAlchemyReadinessRepository,
-)
+from deployctl.persistence.readiness_repository import SqlAlchemyReadinessRepository
 from deployctl.service.orchestration.readiness_controller import ReadinessController
 
 type RepositoryOperation[T] = Callable[
@@ -31,16 +33,9 @@ type RepositoryOperation[T] = Callable[
 
 
 @pytest.fixture
-def database_url(tmp_path) -> str:
-    """A throwaway SQLite database shared by the app and the test helpers."""
-    return f"sqlite+aiosqlite:///{tmp_path / 'readiness.db'}"
-
-
-@pytest.fixture
-def client(database_url: str) -> Iterator[TestClient]:
-    app = create_app(config=Config(database_url=database_url))
-    with TestClient(app) as test_client:
-        yield test_client
+def client(app_client: TestClient) -> Iterator[TestClient]:
+    """The shared app client, backed by the migration-created database."""
+    yield app_client
 
 
 def _run_with_repository[T](
@@ -83,7 +78,7 @@ def _latest_record(database_url: str, deployment_id: str) -> ReadinessRecord | N
 
 
 def test_probe_evaluation_persists_readiness_record(
-    client: TestClient, database_url: str
+    client: TestClient, migrated_database_url: str
 ) -> None:
     deployment_id = "deploy-probe"
 
@@ -98,7 +93,7 @@ def test_probe_evaluation_persists_readiness_record(
     assert body["source_id"] is None
     assert "observed_at" in body
 
-    persisted = _latest_record(database_url, deployment_id)
+    persisted = _latest_record(migrated_database_url, deployment_id)
     assert persisted is not None
     assert persisted.deployment_id == deployment_id
     assert persisted.status == ReadinessStatus.ready
@@ -109,7 +104,7 @@ def test_probe_evaluation_persists_readiness_record(
 
 
 def test_probe_record_is_visible_through_get(
-    client: TestClient, database_url: str
+    client: TestClient, migrated_database_url: str
 ) -> None:
     deployment_id = "deploy-probe-then-get"
 
@@ -133,7 +128,7 @@ def test_probe_record_is_visible_through_get(
 
 
 def test_get_readiness_returns_latest_record(
-    client: TestClient, database_url: str
+    client: TestClient, migrated_database_url: str
 ) -> None:
     deployment_id = "deploy-latest"
     record = ReadinessRecord(
@@ -149,7 +144,7 @@ def test_get_readiness_returns_latest_record(
     ) -> None:
         await repository.save(record)
 
-    _run_with_repository(database_url, _seed)
+    _run_with_repository(migrated_database_url, _seed)
 
     response = client.get(f"/api/v1/deployments/{deployment_id}/readiness")
 
@@ -160,7 +155,7 @@ def test_get_readiness_returns_latest_record(
     assert body["details"] == {"reason": "probe failed"}
 
     latest = _run_with_repository(
-        database_url,
+        migrated_database_url,
         lambda repository, controller: controller.get_status(
             deployment_id=deployment_id
         ),
@@ -178,3 +173,67 @@ def test_readiness_for_unknown_deployment_returns_404(client: TestClient) -> Non
     assert response.status_code == 404
     body = response.json()
     assert "missing-deployment" in body["detail"]
+
+
+def test_readiness_migration_round_trip(tmp_path) -> None:
+    """Prove the readiness contract is executable through the migration chain.
+
+    The readiness table should exist only after the 002 upgrade and disappear
+    cleanly after a downgrade to 001.
+    """
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'readiness.db'}"
+
+    from deployctl.tests._alembic_helpers import downgrade_to, migrate_to
+
+    migrate_to(database_url, "001")
+    assert not asyncio.run(_has_table(database_url, "readiness"))
+    assert asyncio.run(_has_table(database_url, "deployments"))
+
+    migrate_to(database_url, "002")
+    assert asyncio.run(_has_table(database_url, "readiness"))
+    assert asyncio.run(_has_table(database_url, "deployments"))
+    assert asyncio.run(_readiness_columns(database_url)) == [
+        "deployment_id",
+        "status",
+        "details",
+        "timestamp",
+        "observed_at",
+        "scope_id",
+        "source_id",
+    ]
+
+    downgrade_to(database_url, "001")
+    assert not asyncio.run(_has_table(database_url, "readiness"))
+    assert asyncio.run(_has_table(database_url, "deployments"))
+
+
+async def _has_table(url: str, table: str) -> bool:
+    from deployctl.persistence.engine import create_async_engine
+
+    engine = create_async_engine(url)
+    try:
+        async with engine.connect() as conn:
+            from sqlalchemy import text
+
+            row = await conn.execute(
+                text("SELECT name FROM sqlite_master WHERE type='table' AND name=:t"),
+                {"t": table},
+            )
+            return row.fetchone() is not None
+    finally:
+        await engine.dispose()
+
+
+async def _readiness_columns(url: str) -> list[str]:
+    from deployctl.persistence.engine import create_async_engine
+
+    engine = create_async_engine(url)
+    try:
+        async with engine.connect() as conn:
+            from sqlalchemy import text
+
+            result = await conn.execute(text("PRAGMA table_info(readiness)"))
+            rows = result.fetchall()
+            return [r[1] for r in rows]
+    finally:
+        await engine.dispose()

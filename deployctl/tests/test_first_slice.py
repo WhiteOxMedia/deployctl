@@ -3,36 +3,28 @@
 from __future__ import annotations
 
 import asyncio
-import uuid
 from collections.abc import Iterator
 
 import pytest
 from fastapi.testclient import TestClient
 
-from deployctl.app.config import Config
-from deployctl.app.server import create_app
 from deployctl.domain.aggregate.deployment import Deployment
 from deployctl.domain.errors import (
     DeploymentDuplicateError,
     DeploymentNotFoundError,
 )
-from deployctl.persistence.base import Base
-from deployctl.persistence.engine import (
-    create_async_engine,
-    create_session_factory,
-)
+from deployctl.persistence.engine import create_async_engine, create_session_factory
 from deployctl.persistence.repository import SqlAlchemyDeploymentRepository
 from deployctl.service.deployments.deployment_service import DeploymentService
 
 
 @pytest.fixture
-def client() -> Iterator[TestClient]:
-    with TestClient(create_app()) as test_client:
-        yield test_client
+def client(app_client: TestClient) -> Iterator[TestClient]:
+    """The shared app client, backed by the migration-created database."""
+    yield app_client
 
 
-def test_deployment_create_and_get(client: TestClient):
-
+def test_deployment_create_and_get(client: TestClient) -> None:
     payload = {
         "description": "Deploy candidate v1",
         "artifact_ref": "artifact://example/app@v1",
@@ -53,8 +45,7 @@ def test_deployment_create_and_get(client: TestClient):
     assert get_resp.json()["deployment_id"] == deployment_id
 
 
-def test_deployment_create_requires_description(client: TestClient):
-
+def test_deployment_create_requires_description(client: TestClient) -> None:
     resp = client.post(
         "/api/v1/deployments/",
         json={"artifact_ref": "artifact://x"},
@@ -62,22 +53,14 @@ def test_deployment_create_requires_description(client: TestClient):
     assert resp.status_code == 422, resp.json()
 
 
-def test_deployment_create_duplicate_rejected():
-    engine = create_async_engine(
-        Config().database_url.replace("deployctl.db", f"dup-test-{uuid.uuid4().hex}.db")
-    )
+def test_deployment_create_duplicate_rejected(migrated_database_url: str) -> None:
+    engine = create_async_engine(migrated_database_url)
     factory = create_session_factory(engine)
-
-    async def _prepare():
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-
-    asyncio.run(_prepare())
-
     repo = SqlAlchemyDeploymentRepository(session_factory=factory)
+    service = DeploymentService(deployment_repository=repo)
 
-    async def _seed():
-        saved = await repo.save(
+    async def _seed() -> None:
+        await repo.save(
             Deployment(
                 id="dup-1",
                 description="dup",
@@ -88,46 +71,36 @@ def test_deployment_create_duplicate_rejected():
                 metadata={},
             )
         )
-        assert saved is not None
-        assert saved.id == "dup-1"
 
-    asyncio.run(_seed())
-
-    service = DeploymentService(deployment_repository=repo)
-
-    with pytest.raises(DeploymentDuplicateError):
-        service.create_deployment(
-            {
-                "deployment_id": "dup-1",
-                "description": "dup",
-                "artifact_ref": "artifact://x",
-            }
-        )
-
-    asyncio.run(engine.dispose())
+    try:
+        asyncio.run(_seed())
+        # The service owns its own event loop, so it is called synchronously.
+        with pytest.raises(DeploymentDuplicateError):
+            service.create_deployment(
+                {
+                    "deployment_id": "dup-1",
+                    "description": "dup",
+                    "artifact_ref": "artifact://x",
+                }
+            )
+    finally:
+        asyncio.run(engine.dispose())
 
 
-def test_deployment_get_unknown():
-    engine = create_async_engine(Config().database_url)
+def test_deployment_get_unknown(migrated_database_url: str) -> None:
+    engine = create_async_engine(migrated_database_url)
     factory = create_session_factory(engine)
-
-    async def _prepare():
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-
-    asyncio.run(_prepare())
-
     repo = SqlAlchemyDeploymentRepository(session_factory=factory)
     service = DeploymentService(deployment_repository=repo)
 
-    with pytest.raises(DeploymentNotFoundError):
-        service.get_deployment("missing")
+    try:
+        with pytest.raises(DeploymentNotFoundError):
+            service.get_deployment("missing")
+    finally:
+        asyncio.run(engine.dispose())
 
-    asyncio.run(engine.dispose())
 
-
-def test_system_health(client: TestClient):
-
+def test_system_health(client: TestClient) -> None:
     resp = client.get("/api/v1/system/health")
     assert resp.status_code == 200, resp.json()
     body = resp.json()

@@ -7,26 +7,11 @@ from collections.abc import Iterator
 import pytest
 from fastapi.testclient import TestClient
 
-from deployctl.app.server import create_app
-from deployctl.domain.aggregate.deployment import Deployment
-
-
-def _active_deployment() -> Deployment:
-    return Deployment(
-        id="deploy-1",
-        description="active deployment",
-        artifact_ref="artifact://example@previous",
-        status="active",
-        created_at="2026-01-01T00:00:00+00:00",
-        updated_at="2026-01-01T00:00:00+00:00",
-        metadata={},
-    )
-
 
 @pytest.fixture
-def client() -> Iterator[TestClient]:
-    with TestClient(create_app()) as test_client:
-        yield test_client
+def client(app_client: TestClient) -> Iterator[TestClient]:
+    """The shared app client, backed by the migration-created database."""
+    yield app_client
 
 
 def test_rollback_endpoint_not_found(client: TestClient) -> None:
@@ -51,9 +36,8 @@ def test_rollback_endpoint_wire_error() -> None:
 
 class TestRollbackEndpoint:
     @pytest.fixture
-    def client(self) -> Iterator[TestClient]:
-        with TestClient(create_app()) as test_client:
-            yield test_client
+    def client(self, app_client: TestClient) -> Iterator[TestClient]:
+        yield app_client
 
     def test_rollback_fails_for_unknown_deployment(self, client: TestClient) -> None:
         response = client.post(

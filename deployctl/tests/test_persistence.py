@@ -13,9 +13,6 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from deployctl.app.config import Config
-from deployctl.app.server import create_app
-from deployctl.persistence.base import Base
 from deployctl.persistence.engine import create_engine
 from deployctl.persistence.repository import SqlAlchemyDeploymentRepository
 from deployctl.service.deployments.deployment_service import DeploymentService
@@ -26,51 +23,23 @@ def async_run(callback):
     return asyncio.run(callback())
 
 
-@pytest.fixture(scope="session")
-def event_loop():
-    loop = asyncio.new_event_loop()
-    yield loop
-    loop.close()
-
-
-@pytest.fixture
-def db_url(tmp_path):
-    database_path = tmp_path / "deployctl-test.db"
-    return f"sqlite+aiosqlite:///{database_path}"
-
-
-@pytest.fixture
-def config(db_url):
-    return Config(database_url=db_url)
-
-
 @pytest.fixture
 def engine(config):
+    """An engine for the migrated test database.
+
+    ``config`` comes from ``conftest`` and disables startup migrations, so the
+    Alembic chain is applied exactly once per test by the shared fixture.
+    """
     return create_engine(config)
 
 
 @pytest.fixture
-def apply_schema(engine):
-    async def _apply():
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-
-    async def _teardown():
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.drop_all)
-
-    async_run(_apply)
-    yield
-    async_run(_teardown)
-
-
-@pytest.fixture
-def client_full(config, engine, apply_schema):
+def client_full(app_client: TestClient, engine):
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
     repo = SqlAlchemyDeploymentRepository(session_factory=session_factory)
     service = DeploymentService(deployment_repository=repo)
-    app = create_app(config=config)
-    return TestClient(app), repo, service
+    yield app_client, repo, service
+    async_run(engine.dispose)
 
 
 def test_system_health_still_works(client_full):
