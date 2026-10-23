@@ -50,12 +50,15 @@ table with the explicit `observed_at`, `scope_id`, and `source_id` columns so
 the readiness controller can persist and expose the values it forwards from the
 probe evaluation.
 
-The environment is configured for async SQLite via `aiosqlite`, and that is the
-only driver the test suite exercises. Every migration test runs against SQLite;
-nothing here verifies the chain against the async driver used in production, so
-treat that path as unproven until a run against the real database has been
-done. The `sqlalchemy.url` in `alembic.ini` is a placeholder; in deployment it
-should be overridden through the same configuration path the app uses.
+The environment is configured for async SQLite via `aiosqlite`, and the endpoint
+tests run against SQLite only. CI also has a Postgres lane that applies this
+chain to a `postgres:17` service with `asyncpg` and runs a repository smoke test
+(save and read back a deployment, then save and read a readiness record), so the
+schema is known to execute on both dialects. That smoke test does not exercise
+the full API on Postgres, and `asyncpg` is installed only in that job rather
+than declared as a runtime dependency. The `sqlalchemy.url` in `alembic.ini` is
+a placeholder; in deployment it should be overridden through the same
+configuration path the app uses.
 
 ## Running the tests
 

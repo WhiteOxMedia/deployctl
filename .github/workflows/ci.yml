@@ -56,3 +56,104 @@ jobs:
 
       - name: Pytest
         run: pytest -q
+
+  postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: deploy
+          POSTGRES_PASSWORD: secret
+          POSTGRES_DB: deployctl
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U deploy -d deployctl"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql+asyncpg://deploy:secret@127.0.0.1:5432/deployctl
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+          cache: "pip"
+          cache-dependency-path: requirements.lock
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install --require-hashes -r requirements.lock
+          pip install -e . --no-deps
+          pip install "asyncpg==0.32.0"
+
+      - name: Migrate Postgres
+        run: |
+          sed -i "s|^sqlalchemy.url = .*|sqlalchemy.url = ${DATABASE_URL}|" alembic.ini
+          python -m alembic upgrade head
+          python -m alembic current | grep -q "002"
+
+      - name: Repository smoke test
+        run: |
+          python - <<'PY'
+          import asyncio
+          import os
+          from datetime import UTC, datetime
+
+          from deployctl.domain.aggregate.deployment import Deployment
+          from deployctl.domain.readiness import ReadinessRecord, ReadinessStatus
+          from deployctl.persistence.engine import (
+              create_async_engine,
+              create_session_factory,
+          )
+          from deployctl.persistence.readiness_repository import (
+              SqlAlchemyReadinessRepository,
+          )
+          from deployctl.persistence.repository import SqlAlchemyDeploymentRepository
+
+          URL = os.environ["DATABASE_URL"]
+
+
+          async def main() -> None:
+              engine = create_async_engine(URL)
+              factory = create_session_factory(engine)
+              try:
+                  deployments = SqlAlchemyDeploymentRepository(session_factory=factory)
+                  readiness = SqlAlchemyReadinessRepository(session_factory=factory)
+
+                  deployment = Deployment(
+                      id="postgres-smoke",
+                      description="Postgres smoke deployment",
+                      artifact_ref="artifact://ci/postgres-smoke@v1",
+                      status="planned",
+                      created_at="2026-01-01T00:00:00+00:00",
+                      updated_at="2026-01-01T00:00:00+00:00",
+                      metadata={},
+                  )
+                  await deployments.save(deployment)
+                  stored = await deployments.get_by_id("postgres-smoke")
+                  assert stored is not None
+                  assert stored.description == deployment.description
+
+                  record = ReadinessRecord(
+                      deployment_id="postgres-smoke",
+                      status=ReadinessStatus.ready,
+                      details={"source": "ci"},
+                      timestamp=datetime.now(UTC),
+                  )
+                  await readiness.save(record)
+                  latest = await readiness.get_latest("postgres-smoke")
+                  assert latest is not None
+                  assert latest.status is ReadinessStatus.ready
+
+                  print("postgres smoke ok:", stored.id, latest.status.value)
+              finally:
+                  await engine.dispose()
+
+
+          asyncio.run(main())
+          PY
