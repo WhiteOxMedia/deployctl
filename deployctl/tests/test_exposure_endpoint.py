@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 import pytest
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from deployctl.app.server import create_app
 from deployctl.domain.aggregate.deployment import Deployment
 
 
@@ -22,14 +24,9 @@ def _active_deployment() -> Deployment:
 
 
 @pytest.fixture
-def client() -> TestClient:
-    from deployctl.api.router import ApiRouter
-    from deployctl.app.dependencies import build_dependencies
-
-    deps = build_dependencies()
-    app = FastAPI()
-    app.include_router(ApiRouter(dependencies=deps).route())
-    return TestClient(app)
+def client() -> Iterator[TestClient]:
+    with TestClient(create_app()) as test_client:
+        yield test_client
 
 
 def test_exposure_endpoint_not_found(client: TestClient) -> None:
@@ -54,14 +51,9 @@ def test_exposure_endpoint_wire_error() -> None:
 
 class TestExposureEndpoint:
     @pytest.fixture
-    def client(self) -> TestClient:
-        from deployctl.api.router import ApiRouter
-        from deployctl.app.dependencies import build_dependencies
-
-        deps = build_dependencies()
-        app = FastAPI()
-        app.include_router(ApiRouter(dependencies=deps).route())
-        return TestClient(app)
+    def client(self) -> Iterator[TestClient]:
+        with TestClient(create_app()) as test_client:
+            yield test_client
 
     def test_exposure_fails_for_unknown_deployment(self, client: TestClient) -> None:
         response = client.post(

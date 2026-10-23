@@ -54,11 +54,16 @@ mounted under `/api/v1`:
 - `POST /api/v1/deployments/{deployment_id}/probe`
 - `GET /api/v1/deployments/{deployment_id}/readiness`
 
-The factory cannot yet be handed to an ASGI server: `build_dependencies()` calls
-`asyncio.run()` to create the schema, so building the app inside a running event
-loop fails with `RuntimeError: This event loop is already running`. The tests
-avoid that by constructing the app outside a loop and driving it with
-`TestClient`; serving the app needs the bootstrap reworked first.
+Building the app performs no database I/O, so the factory can be handed
+straight to an ASGI server. The schema is created in the application lifespan
+on startup, which keeps the factory safe to call from inside a running event
+loop:
+
+```
+uvicorn --factory deployctl.app.server:create_app --host 127.0.0.1 --port 8000
+```
+
+The tests drive the same lifespan by using `TestClient` as a context manager.
 
 ## CLI
 

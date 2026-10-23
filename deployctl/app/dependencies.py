@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
     async_sessionmaker,
     create_async_engine,
 )
@@ -40,6 +41,9 @@ class ApplicationDependencies:
 
     def __init__(self, config: Config) -> None:
         self.config = config
+
+        self.engine: AsyncEngine | None = None
+        self.session_factory: async_sessionmaker | None = None
 
         # Repositories are wired once a persistence backend exists.
         self.deployment_repository: DeploymentRepository | None = None
@@ -78,12 +82,34 @@ class ApplicationDependencies:
             raise KeyError("no dependency named 'probe_adapter'")
         return self._null_probe_adapter
 
+    async def create_schema(self) -> None:
+        """Create any missing tables.
+
+        Runs inside the application lifespan so the factory stays free of
+        blocking I/O and can be called from within a running event loop.
+        ``create_all`` only creates what is missing, so this is safe on every
+        start.
+        """
+        if self.engine is None:
+            raise RuntimeError(
+                "cannot create the schema: dependencies were built without "
+                "a database engine"
+            )
+        async with self.engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+    async def dispose(self) -> None:
+        """Release the database connection pool."""
+        if self.engine is not None:
+            await self.engine.dispose()
+
 
 def build_dependencies(*, config: Config | None = None) -> ApplicationDependencies:
     """Build the application dependency container.
 
-    This wires the async SQLAlchemy engine and a real deployment repository
-    for the first database-backed vertical slice.
+    This only wires objects; it performs no database I/O. The schema is
+    created later by :meth:`ApplicationDependencies.create_schema`, which the
+    application lifespan awaits on startup.
     """
     if config is None:
         config = Config()
@@ -92,19 +118,8 @@ def build_dependencies(*, config: Config | None = None) -> ApplicationDependenci
 
     engine = create_async_engine(config.engine_url())
     factory = async_sessionmaker(engine, expire_on_commit=False)
-
-    async def _instantiate():
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-
-    try:
-        import asyncio as _asyncio
-
-        _asyncio.run(_instantiate())
-    except RuntimeError:
-        import asyncio as _asyncio2
-
-        _asyncio2.get_running_loop().run_until_complete(_instantiate())
+    deps.engine = engine
+    deps.session_factory = factory
 
     deps.deployment_repository = SqlAlchemyDeploymentRepository(
         session_factory=factory,
