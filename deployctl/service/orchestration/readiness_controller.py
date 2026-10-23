@@ -34,10 +34,19 @@ class ReadinessController:
         self._readiness_repository = readiness_repository
         self._probe_adapter = probe_adapter
 
-    async def evaluate(self, deployment_id: str) -> ReadinessRecord:
+    async def evaluate(
+        self,
+        deployment_id: str,
+        scope_id: str | None = None,
+        source_id: str | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> ReadinessRecord:
         """Run a probe, persist the observation, and return the record."""
         probe_result = self._probe_adapter.execute(
             deployment_id=deployment_id,
+            scope_id=scope_id,
+            source_id=source_id,
+            params=params,
         )
         status = _status_from_probe(probe_result)
         record = ReadinessRecord(

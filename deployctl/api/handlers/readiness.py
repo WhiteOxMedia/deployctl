@@ -68,7 +68,12 @@ class ReadinessRouter:
             deployment_id: str,
             body: ProbeRequest | None = None,
         ) -> ProbeResponse:
-            record = await self._controller().evaluate(deployment_id=deployment_id)
+            record = await self._controller().evaluate(
+                deployment_id=deployment_id,
+                scope_id=body.scope_id if body else None,
+                source_id=body.source_id if body else None,
+                params=body.params if body else None,
+            )
             return ProbeResponse(
                 deployment_id=record.deployment_id,
                 status=record.status.value,
