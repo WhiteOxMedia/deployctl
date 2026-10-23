@@ -1,0 +1,9 @@
+[lint]
+select = ["E", "F", "I", "W", "UP"]
+ignore = []
+
+[lint.isort]
+known-first-party = ["deployctl"]
+
+[lint.per-file-ignores]
+"**/tests/**" = ["S101"]
