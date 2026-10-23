@@ -30,13 +30,13 @@ def upgrade() -> None:
             "created_at",
             sa.String(),
             nullable=False,
-            server_default=sa.text("datetime('now')"),
+            server_default=sa.text("CURRENT_TIMESTAMP"),
         ),
         sa.Column(
             "updated_at",
             sa.String(),
             nullable=False,
-            server_default=sa.text("datetime('now')"),
+            server_default=sa.text("CURRENT_TIMESTAMP"),
         ),
         sa.PrimaryKeyConstraint("id"),
     )
