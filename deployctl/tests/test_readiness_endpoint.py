@@ -12,13 +12,11 @@ from collections.abc import Awaitable, Callable, Iterator
 from datetime import UTC, datetime
 
 import pytest
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from deployctl.api.router import build_router_for_app
 from deployctl.app.config import Config
-from deployctl.app.dependencies import ApplicationDependencies, build_dependencies
 from deployctl.app.null_adapters import NullProbeAdapter
+from deployctl.app.server import create_app
 from deployctl.domain.readiness import ReadinessRecord, ReadinessStatus
 from deployctl.persistence.engine import create_async_engine, create_session_factory
 from deployctl.persistence.readiness_repository import (
@@ -39,14 +37,8 @@ def database_url(tmp_path) -> str:
 
 
 @pytest.fixture
-def app_dependencies(database_url: str) -> ApplicationDependencies:
-    return build_dependencies(config=Config(database_url=database_url))
-
-
-@pytest.fixture
-def client(app_dependencies: ApplicationDependencies) -> Iterator[TestClient]:
-    app = FastAPI()
-    app.include_router(build_router_for_app(app_dependencies))
+def client(database_url: str) -> Iterator[TestClient]:
+    app = create_app(config=Config(database_url=database_url))
     with TestClient(app) as test_client:
         yield test_client
 

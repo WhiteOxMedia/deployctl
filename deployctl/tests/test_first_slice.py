@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from collections.abc import Iterator
 
 import pytest
 from fastapi.testclient import TestClient
 
 from deployctl.app.config import Config
-from deployctl.app.dependencies import build_dependencies
 from deployctl.app.server import create_app
 from deployctl.domain.aggregate.deployment import Deployment
 from deployctl.domain.errors import (
@@ -25,14 +25,13 @@ from deployctl.persistence.repository import SqlAlchemyDeploymentRepository
 from deployctl.service.deployments.deployment_service import DeploymentService
 
 
-def _client() -> TestClient:
-    deps = build_dependencies()
-    app = create_app(config=deps.config)
-    return TestClient(app)
+@pytest.fixture
+def client() -> Iterator[TestClient]:
+    with TestClient(create_app()) as test_client:
+        yield test_client
 
 
-def test_deployment_create_and_get():
-    client = _client()
+def test_deployment_create_and_get(client: TestClient):
 
     payload = {
         "description": "Deploy candidate v1",
@@ -54,8 +53,7 @@ def test_deployment_create_and_get():
     assert get_resp.json()["deployment_id"] == deployment_id
 
 
-def test_deployment_create_requires_description():
-    client = _client()
+def test_deployment_create_requires_description(client: TestClient):
 
     resp = client.post(
         "/api/v1/deployments/",
@@ -128,8 +126,7 @@ def test_deployment_get_unknown():
     asyncio.run(engine.dispose())
 
 
-def test_system_health():
-    client = _client()
+def test_system_health(client: TestClient):
 
     resp = client.get("/api/v1/system/health")
     assert resp.status_code == 200, resp.json()
