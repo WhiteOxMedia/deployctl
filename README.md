@@ -50,15 +50,28 @@ table with the explicit `observed_at`, `scope_id`, and `source_id` columns so
 the readiness controller can persist and expose the values it forwards from the
 probe evaluation.
 
-The environment is configured for async SQLite via `aiosqlite`, and the endpoint
-tests run against SQLite only. CI also has a Postgres lane that applies this
-chain to a `postgres:17` service with `asyncpg` and runs a repository smoke test
-(save and read back a deployment, then save and read a readiness record), so the
-schema is known to execute on both dialects. That smoke test does not exercise
-the full API on Postgres, and `asyncpg` is installed only in that job rather
-than declared as a runtime dependency. The `sqlalchemy.url` in `alembic.ini` is
-a placeholder; in deployment it should be overridden through the same
-configuration path the app uses.
+The environment is configured for async SQLite via `aiosqlite`, and the local
+test run uses SQLite. CI also has a Postgres lane that applies this chain to a
+`postgres:17` service with `asyncpg`, runs a repository smoke test (save and read
+back a deployment, then save and read a readiness record), and then runs
+`deployctl/tests/test_readiness_endpoint.py` against the same server, so the
+schema and the readiness API are both exercised on both dialects. `asyncpg` is
+installed only in that job rather than declared as a runtime dependency. The
+`sqlalchemy.url` in `alembic.ini` is a placeholder; in deployment it should be
+overridden through the same configuration path the app uses.
+
+The test fixtures use a throwaway SQLite file by default. Setting
+`DEPLOYCTL_TEST_DATABASE_URL` points them at a server database instead, which is
+how the Postgres lane runs the endpoint tests:
+
+```bash
+DEPLOYCTL_TEST_DATABASE_URL=postgresql+asyncpg://user:pass@127.0.0.1:5432/deployctl \
+  pytest -q deployctl/tests/test_readiness_endpoint.py
+```
+
+That fixture drops and recreates the `public` schema before applying the chain,
+so every test starts from an empty database and the schema still comes from
+Alembic. Point it only at a database whose contents you are willing to lose.
 
 ## Running the tests
 

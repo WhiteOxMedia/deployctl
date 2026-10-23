@@ -1,13 +1,18 @@
 """Async Alembic helpers for deployctl test suites.
 
 These helpers apply the project's Alembic migration chain against a fresh
-SQLite database so that tests exercise the same schema the server applies at
-startup instead of using the non-authoritative `Base.metadata.create_all`
-fallback.
+database so that tests exercise the same schema the server applies at startup
+instead of using the non-authoritative `Base.metadata.create_all` fallback.
+
+The default target is a throwaway SQLite file. Setting the
+``DEPLOYCTL_TEST_DATABASE_URL`` environment variable points the fixtures at a
+server database instead, which is how CI runs the same endpoint tests against
+Postgres.
 """
 
 from __future__ import annotations
 
+import asyncio
 import queue
 import threading
 from pathlib import Path
@@ -16,7 +21,15 @@ from typing import Any
 from alembic import command
 from alembic.config import Config as AlembicConfig
 from sqlalchemy import text
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
+
+SERVER_DATABASE_URL_ENV = "DEPLOYCTL_TEST_DATABASE_URL"
+
+
+def is_server_database(database_url: str) -> bool:
+    """Whether *database_url* points at a shared server rather than a temp file."""
+    return make_url(database_url).get_backend_name() != "sqlite"
 
 
 def _run_alembic(fn: Any) -> None:
@@ -51,6 +64,32 @@ def _load_config_for_url(database_url: str) -> AlembicConfig:
 def apply_migration_chain(database_url: str) -> None:
     """Apply the full migration chain against a fresh database."""
     _run_alembic(lambda: command.upgrade(_load_config_for_url(database_url), "head"))
+
+
+def reset_database(database_url: str) -> None:
+    """Start a server-backed test database from an empty schema at head.
+
+    SQLite tests get a brand-new file per test, so there is nothing to clear.
+    A shared server database has no such isolation: each test would otherwise
+    inherit rows and revisions from the test before it. Dropping and recreating
+    ``public`` gives every test the same starting point as the SQLite fixture,
+    and the chain is then applied so the schema still comes from Alembic.
+    """
+    if not is_server_database(database_url):
+        apply_migration_chain(database_url)
+        return
+
+    async def _drop_and_recreate_schema() -> None:
+        engine = create_async_engine(database_url)
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(text("DROP SCHEMA IF EXISTS public CASCADE"))
+                await conn.execute(text("CREATE SCHEMA public"))
+        finally:
+            await engine.dispose()
+
+    asyncio.run(_drop_and_recreate_schema())
+    apply_migration_chain(database_url)
 
 
 def migrate_to(database_url: str, revision: str) -> None:

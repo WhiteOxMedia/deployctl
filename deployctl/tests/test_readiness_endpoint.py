@@ -14,6 +14,7 @@ without relying on ORM-only fallbacks.
 from __future__ import annotations
 
 import asyncio
+import os
 from collections.abc import Awaitable, Callable, Iterator
 from datetime import UTC, datetime
 
@@ -179,13 +180,28 @@ def test_readiness_migration_round_trip(tmp_path) -> None:
     """Prove the readiness contract is executable through the migration chain.
 
     The readiness table should exist only after the 002 upgrade and disappear
-    cleanly after a downgrade to 001.
+    cleanly after a downgrade to 001. The database is the same one the rest of
+    the suite uses, so under ``DEPLOYCTL_TEST_DATABASE_URL`` this asserts the
+    downgrade path on the server too.
     """
-    database_url = f"sqlite+aiosqlite:///{tmp_path / 'readiness.db'}"
+    from deployctl.tests._alembic_helpers import (
+        SERVER_DATABASE_URL_ENV,
+        downgrade_to,
+        migrate_to,
+        reset_database,
+    )
 
-    from deployctl.tests._alembic_helpers import downgrade_to, migrate_to
+    server_url = os.environ.get(SERVER_DATABASE_URL_ENV)
+    if server_url:
+        # Earlier tests left the shared database at head; walk it back to 001
+        # so the round trip below starts from the revision it asserts about.
+        reset_database(server_url)
+        downgrade_to(server_url, "001")
+        database_url = server_url
+    else:
+        database_url = f"sqlite+aiosqlite:///{tmp_path / 'readiness.db'}"
+        migrate_to(database_url, "001")
 
-    migrate_to(database_url, "001")
     assert not asyncio.run(_has_table(database_url, "readiness"))
     assert asyncio.run(_has_table(database_url, "deployments"))
 
@@ -208,32 +224,38 @@ def test_readiness_migration_round_trip(tmp_path) -> None:
 
 
 async def _has_table(url: str, table: str) -> bool:
+    """Whether *table* exists, asked through SQLAlchemy so it works on any dialect."""
+    from sqlalchemy import inspect
+
     from deployctl.persistence.engine import create_async_engine
 
     engine = create_async_engine(url)
+
+    def _check(sync_conn) -> bool:
+        return inspect(sync_conn).has_table(table)
+
     try:
         async with engine.connect() as conn:
-            from sqlalchemy import text
-
-            row = await conn.execute(
-                text("SELECT name FROM sqlite_master WHERE type='table' AND name=:t"),
-                {"t": table},
-            )
-            return row.fetchone() is not None
+            return await conn.run_sync(_check)
     finally:
         await engine.dispose()
 
 
 async def _readiness_columns(url: str) -> list[str]:
+    """The readiness table's column names, read through dialect-neutral reflection."""
+    from sqlalchemy import inspect
+
     from deployctl.persistence.engine import create_async_engine
 
     engine = create_async_engine(url)
+
+    def _columns(sync_conn) -> list[str]:
+        return [
+            column["name"] for column in inspect(sync_conn).get_columns("readiness")
+        ]
+
     try:
         async with engine.connect() as conn:
-            from sqlalchemy import text
-
-            result = await conn.execute(text("PRAGMA table_info(readiness)"))
-            rows = result.fetchall()
-            return [r[1] for r in rows]
+            return await conn.run_sync(_columns)
     finally:
         await engine.dispose()
