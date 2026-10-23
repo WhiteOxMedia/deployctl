@@ -2,35 +2,78 @@
 
 Deployment control plane skeleton.
 
-This repository is the clean project skeleton for the deployctl control plane.
-It is importable but intentionally minimal until the real implementations are
-added.
+The package is importable, builds a FastAPI application, and implements one
+end-to-end slice: readiness probe evaluation persisted to SQLite. The remaining
+service areas are scaffolding.
 
-## Architecture
+## Requirements
 
-- `model/` — shared, dependency-free primitives.
-- `domain/` — domain errors, state machine, aggregates, value objects.
-- `policy/` — policy models, evaluator, snapshot (placeholder).
-- `service/` — use-case orchestration, DTOs, service errors (placeholder).
-- `persistence/` — repository, mapper, transaction contracts and migrations.
-- `adapters/` — external-system adapter interfaces (placeholder).
-- `api/` — router, auth, middleware, handlers, schemas (placeholder).
-- `worker/` — background worker jobs and supervisor (placeholder).
-- `events/` — domain event types and dispatcher (placeholder).
-- `telemetry/` — logging, metrics, tracing (placeholder).
-- `app/` — server wiring placeholders.
-- `cmd/` — CLI entry point placeholder.
+- Python 3.14 (declared as `requires-python` in `pyproject.toml`)
+- Dependencies are pinned and hash-locked in `requirements.lock`
 
-## Local run
+## Layout
 
-This skeleton does not yet start a server. Once implemented, the intended entry
-points are:
+All importable code lives under `deployctl/`:
 
-- `python -m deployctl.cmd.cli server`
-- `python -m deployctl.cmd.cli worker`
-- `python -m deployctl.cmd.cli migrate`
+| Path | Contents |
+| --- | --- |
+| `deployctl/model/` | Shared, dependency-free primitives |
+| `deployctl/domain/` | Errors, state machine, aggregates, value objects |
+| `deployctl/policy/` | Policy models, evaluator, snapshot (placeholder) |
+| `deployctl/service/` | Orchestration, DTOs, service errors |
+| `deployctl/persistence/` | Repositories, mapper, models, transaction contracts |
+| `deployctl/adapters/` | External-system adapter interfaces |
+| `deployctl/api/` | Router, handlers, schemas |
+| `deployctl/app/` | Configuration, dependency wiring, server factory, null adapters |
+| `deployctl/events/` | Event types and dispatcher (placeholder) |
+| `deployctl/telemetry/` | Logging, metrics, tracing (placeholder) |
+| `deployctl/worker/` | Background worker jobs (placeholder) |
+| `deployctl/cmd/` | CLI entry point |
+| `deployctl/tests/` | Test suite |
+
+Supporting files at the repository root:
+
+| Path | Purpose |
+| --- | --- |
+| `alembic.ini`, `migrations/` | Alembic environment and revisions (initial `deployments` table) |
+| `pyproject.toml` | Project metadata, pinned dependencies, `dev` extras |
+| `requirements.lock` | Hash-locked resolution of the runtime and dev dependencies |
+| `pytest.ini`, `ruff.toml` | Test discovery and lint configuration |
+| `.github/workflows/ci.yml` | Hash-locked install, Ruff, format check, pytest |
+
+The root-level `_*.py`, `diag_*.py` and `run_battery.py` scripts predate the
+package and are not part of it.
+
+## Application
+
+`deployctl.app.server.create_app(config=...)` returns a FastAPI app with the API
+mounted under `/api/v1`:
+
+- `GET /health`
+- `GET /api/v1/system/health`
+- `POST /api/v1/deployments/{deployment_id}/probe`
+- `GET /api/v1/deployments/{deployment_id}/readiness`
+
+The factory cannot yet be handed to an ASGI server: `build_dependencies()` calls
+`asyncio.run()` to create the schema, so building the app inside a running event
+loop fails with `RuntimeError: This event loop is already running`. The tests
+avoid that by constructing the app outside a loop and driving it with
+`TestClient`; serving the app needs the bootstrap reworked first.
+
+## CLI
+
+```
+python -m deployctl.cmd.cli server    # builds the app and exits
+python -m deployctl.cmd.cli worker    # placeholder
+python -m deployctl.cmd.cli migrate   # placeholder
+```
 
 ## Development
 
-- Formatting and linting: ruff (placeholder config in pyproject.toml)
-- Tests: pytest (placeholder config in pyproject.toml)
+```
+pip install -e ".[dev]"
+pytest -q
+ruff check deployctl tests
+ruff format --check deployctl tests
+alembic upgrade head                  # apply migrations to the local SQLite database
+```
