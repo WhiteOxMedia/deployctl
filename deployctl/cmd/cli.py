@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 
-from deployctl.app.server import run_dev
+import uvicorn
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -12,7 +12,18 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="deployctl")
     subparsers = parser.add_subparsers(dest="command")
 
-    subparsers.add_parser("server", help="run the control plane server")
+    server_parser = subparsers.add_parser("server", help="run the control plane server")
+    server_parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="interface to bind (default: 127.0.0.1)",
+    )
+    server_parser.add_argument(
+        "--port",
+        type=int,
+        default=8000,
+        help="port to bind (default: 8000)",
+    )
     subparsers.add_parser("worker", help="run a background worker")
     subparsers.add_parser("migrate", help="run database migrations")
 
@@ -23,7 +34,12 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     if args.command == "server":
-        run_dev()
+        uvicorn.run(
+            "deployctl.app.server:create_app",
+            factory=True,
+            host=args.host,
+            port=args.port,
+        )
         return 0
 
     # worker / migrate are placeholders for now

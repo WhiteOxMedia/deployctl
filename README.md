@@ -68,9 +68,10 @@ The tests drive the same lifespan by using `TestClient` as a context manager.
 ## CLI
 
 ```
-python -m deployctl.cmd.cli server    # builds the app and exits
-python -m deployctl.cmd.cli worker    # placeholder
-python -m deployctl.cmd.cli migrate   # placeholder
+python -m deployctl.cmd.cli server                # serve on 127.0.0.1:8000
+python -m deployctl.cmd.cli server --port 9000    # serve on another port
+python -m deployctl.cmd.cli worker                # placeholder
+python -m deployctl.cmd.cli migrate               # placeholder
 ```
 
 ## Development
