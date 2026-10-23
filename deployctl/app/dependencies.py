@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -81,6 +82,20 @@ class ApplicationDependencies:
         if self._null_probe_adapter is None:
             raise KeyError("no dependency named 'probe_adapter'")
         return self._null_probe_adapter
+
+    async def check_database(self) -> None:
+        """Check that the pool can serve a connection and the database answers.
+
+        This checks a connection out of the engine pool and runs ``SELECT 1``,
+        which is what every request path needs. It touches no tables, so a
+        reachable but unmigrated database counts as healthy. Failures propagate
+        so the caller can turn them into an unhealthy response instead of
+        discovering the dead pool on the next deployment request.
+        """
+        if self.engine is None:
+            raise RuntimeError("the database engine is not wired")
+        async with self.engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
 
     async def dispose(self) -> None:
         """Release the database connection pool."""

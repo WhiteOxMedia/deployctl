@@ -124,6 +124,37 @@ opened it; the application's own engine is unaffected because its handlers
 share a single loop, which is what makes these suites pass on Postgres instead
 of only on SQLite.
 
+## Health checks
+
+`GET /health` is a liveness check with no dependencies: it answers
+`{"status": "ok"}` without touching the database, so a restart probe does not
+fail because the database is briefly unreachable.
+
+`GET /api/v1/system/health` checks the service and the database. It checks a
+connection out of the engine pool and runs `SELECT 1`, so a pool that cannot
+serve a connection reports `503` on the probe instead of surfacing later as a
+failed deployment request:
+
+```json
+{
+  "ok": false,
+  "service": "deployctl",
+  "version": "0.1.0",
+  "database": "down",
+  "error": "OperationalError"
+}
+```
+
+The probe touches no tables, so a reachable but unmigrated database is healthy;
+it answers connectivity, not schema. The body names the exception type only and
+never the driver message, which can contain the database URL and its
+credentials. When the database answers, the same endpoint returns `200` with
+`"database": "up"`.
+
+Point readiness probes at `/api/v1/system/health` and liveness probes at
+`/health`; using the database-backed one for both would restart the process
+during a database blip.
+
 ## Running the tests
 
 ```bash
