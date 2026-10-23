@@ -94,12 +94,18 @@ def test_probe_evaluation_persists_readiness_record(
     assert body["deployment_id"] == deployment_id
     assert body["status"] == ReadinessStatus.ready.value
     assert body["healthy"] is True
+    assert body["scope_id"] is None
+    assert body["source_id"] is None
+    assert "observed_at" in body
 
     persisted = _latest_record(database_url, deployment_id)
     assert persisted is not None
     assert persisted.deployment_id == deployment_id
     assert persisted.status == ReadinessStatus.ready
     assert persisted.details == body["details"]
+    assert persisted.scope_id == body["scope_id"]
+    assert persisted.source_id == body["source_id"]
+    assert persisted.observed_at == datetime.fromisoformat(body["observed_at"])
 
 
 def test_probe_record_is_visible_through_get(
@@ -122,6 +128,8 @@ def test_probe_record_is_visible_through_get(
     assert body["status"] == probed["status"]
     assert body["details"] == probed["details"]
     assert body["observed_at"] == probed["observed_at"]
+    assert body["scope_id"] == probed["scope_id"]
+    assert body["source_id"] == probed["source_id"]
 
 
 def test_get_readiness_returns_latest_record(
@@ -161,6 +169,7 @@ def test_get_readiness_returns_latest_record(
     assert latest.deployment_id == deployment_id
     assert latest.status == ReadinessStatus.not_ready
     assert latest.details == body["details"]
+    assert latest.observed_at == datetime.fromisoformat(body["observed_at"])
 
 
 def test_readiness_for_unknown_deployment_returns_404(client: TestClient) -> None:
