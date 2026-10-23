@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -18,6 +19,7 @@ from sqlalchemy.pool import NullPool
 
 from deployctl.app import dependencies as dependencies_module
 from deployctl.app.config import Config
+from deployctl.app.dependencies import build_dependencies
 from deployctl.app.server import create_app
 from deployctl.persistence.engine import create_async_engine, create_session_factory
 from deployctl.persistence.repository import SqlAlchemyDeploymentRepository
@@ -175,6 +177,72 @@ def test_app_engine_pools_connections_across_requests(
         deployment_id = created.json()["deployment_id"]
         fetched = client.get(f"/api/v1/deployments/{deployment_id}")
         assert fetched.status_code == 200, fetched.text
+
+
+def test_app_engine_takes_pool_settings_from_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The pool is sized from ``Config``, not from SQLAlchemy's defaults."""
+    captured: dict[str, Any] = {}
+    real_create_async_engine = dependencies_module.create_async_engine
+
+    def _capturing_create_async_engine(url: str, **kwargs: Any) -> AsyncEngine:
+        captured["url"] = url
+        captured["kwargs"] = kwargs
+        return real_create_async_engine(url, **kwargs)
+
+    monkeypatch.setattr(
+        dependencies_module, "create_async_engine", _capturing_create_async_engine
+    )
+
+    config = Config(
+        database_url=f"sqlite+aiosqlite:///{tmp_path / 'pool.db'}",
+        pool_size=3,
+        max_overflow=7,
+        pool_recycle=120,
+    )
+    deps = build_dependencies(config=config)
+    try:
+        assert captured["kwargs"] == {
+            "pool_size": 3,
+            "max_overflow": 7,
+            "pool_recycle": 120,
+        }
+        # The pool really was built with the configured size, not just passed.
+        assert deps.engine.pool.size() == 3
+    finally:
+        asyncio.run(deps.dispose())
+
+
+def test_in_memory_sqlite_keeps_its_dialect_pool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An in-memory database has no pool to size, and must still build.
+
+    SQLite in-memory is served by ``StaticPool``: one connection holding the one
+    database. That pool rejects ``pool_size``/``max_overflow``, so the engine is
+    created without the config settings instead of failing to start.
+    """
+    captured: dict[str, Any] = {}
+    real_create_async_engine = dependencies_module.create_async_engine
+
+    def _capturing_create_async_engine(url: str, **kwargs: Any) -> AsyncEngine:
+        captured["url"] = url
+        captured["kwargs"] = kwargs
+        return real_create_async_engine(url, **kwargs)
+
+    monkeypatch.setattr(
+        dependencies_module, "create_async_engine", _capturing_create_async_engine
+    )
+
+    deps = build_dependencies(
+        config=Config(database_url="sqlite+aiosqlite:///:memory:", pool_size=3)
+    )
+    try:
+        assert captured["kwargs"] == {}
+        assert type(deps.engine.pool).__name__ == "StaticPool"
+    finally:
+        asyncio.run(deps.dispose())
 
 
 def test_deployment_create_and_get_via_service(client_full):
