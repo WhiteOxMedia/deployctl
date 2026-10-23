@@ -15,6 +15,8 @@ class ReadinessResponse(BaseModel):
     status: str
     details: dict[str, Any] | None
     observed_at: datetime
+    scope_id: str | None = None
+    source_id: str | None = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -37,5 +39,7 @@ class ProbeResponse(BaseModel):
     healthy: bool
     details: dict[str, Any] | None
     observed_at: datetime
+    scope_id: str | None = None
+    source_id: str | None = None
 
     model_config = ConfigDict(from_attributes=True)

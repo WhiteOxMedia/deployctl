@@ -52,11 +52,14 @@ class ReadinessRouter:
                         f"no readiness record found for deployment {deployment_id}"
                     ),
                 )
+            assert record is not None  # for mypy; we already raised 404 above
             return ReadinessResponse(
                 deployment_id=record.deployment_id,
                 status=record.status.value,
                 details=record.details,
-                observed_at=record.timestamp,
+                observed_at=record.observed_at,
+                scope_id=record.scope_id,
+                source_id=record.source_id,
             )
 
         @router.post(
@@ -79,7 +82,9 @@ class ReadinessRouter:
                 status=record.status.value,
                 healthy=record.status == ReadinessStatus.ready,
                 details=record.details,
-                observed_at=record.timestamp,
+                observed_at=record.observed_at,
+                scope_id=record.scope_id,
+                source_id=record.source_id,
             )
 
         return router

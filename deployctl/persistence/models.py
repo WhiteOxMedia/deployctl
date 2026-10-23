@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import String
@@ -47,6 +47,14 @@ class ReadinessModel(Base):
         String, nullable=False, default=lambda: datetime.utcnow().isoformat()
     )
 
+    observed_at: Mapped[str] = mapped_column(
+        String, nullable=False, default=lambda: datetime.now(UTC).isoformat()
+    )
+
+    scope_id: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+
+    source_id: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+
     def to_domain(self) -> ReadinessRecord:
         return ReadinessModel._map_to_domain(self)
 
@@ -70,6 +78,9 @@ class ReadinessModel(Base):
             status=ReadinessStatus(model.status),
             details=parsed_details,
             timestamp=datetime.fromisoformat(model.timestamp),
+            observed_at=datetime.fromisoformat(model.observed_at),
+            scope_id=model.scope_id,
+            source_id=model.source_id,
         )
 
     @staticmethod
@@ -83,6 +94,9 @@ class ReadinessModel(Base):
             status=record.status.value,
             details=details_json,
             timestamp=record.timestamp.isoformat(),
+            observed_at=record.observed_at.isoformat(),
+            scope_id=record.scope_id,
+            source_id=record.source_id,
         )
 
     def __repr__(self) -> str:
