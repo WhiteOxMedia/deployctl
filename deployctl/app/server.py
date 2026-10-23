@@ -61,8 +61,3 @@ def expose_routes(*, config: Config | None = None) -> list[tuple[str, set[str]]]
 
     walk(app.routes)
     return paths
-
-
-def run_dev(*, config: Config | None = None) -> FastAPI:
-    """Create the application for local development and testing."""
-    return create_app(config=config)
