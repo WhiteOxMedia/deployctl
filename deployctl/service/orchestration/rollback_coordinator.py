@@ -4,14 +4,14 @@ This coordinator handles rollback transitions for deployments. Right now it is
 intentionally thin:
 
 - load a deployment from the repository
+- optionally consult readiness (non-blocking)
 - validate that a rollback target exists
 - call the configured rollback-related adapters
 - write the updated deployment back
 - emit a stub operation-log entry
 - return a RollbackResult DTO
 
-It does not implement promotion or exposure. Those belong in
-PromotionEngine and ExposureController.
+Rollback may consult readiness for context but does not block on it.
 """
 
 from __future__ import annotations
@@ -26,7 +26,9 @@ from deployctl.domain.errors import (
     RollbackAnchorError,
     RollbackNotFoundError,
 )
+from deployctl.domain.readiness import ReadinessRecord
 from deployctl.persistence.repository import DeploymentRepository
+from deployctl.service.orchestration.readiness_controller import ReadinessController
 
 
 @dataclass(frozen=True)
@@ -50,6 +52,7 @@ class RollbackResult:
     restored_to: str
     error: str | None = None
     steps: dict[str, Any] | None = None
+    readiness_status: str | None = None
 
 
 class RollbackCoordinator:
@@ -58,6 +61,8 @@ class RollbackCoordinator:
     Public surface is deliberately small so it can be tested against a
     real DeploymentRepository without requiring the rest of the vertical
     slices to be wired yet.
+
+    Rollback may consult readiness for context but does not block on it.
     """
 
     def __init__(
@@ -65,9 +70,11 @@ class RollbackCoordinator:
         *,
         deployment_repository: DeploymentRepository,
         registry: RegistryAdapter,
+        readiness_controller: ReadinessController | None = None,
     ) -> None:
         self.deployment_repository = deployment_repository
         self.registry = registry
+        self.readiness_controller = readiness_controller
 
     async def rollback(self, request: RollbackRequest) -> RollbackResult:
         """Run one rollback attempt.
@@ -108,12 +115,15 @@ class RollbackCoordinator:
         deployment.artifact_ref = restore_target
         deployment.status = "rolled_back"
         updated = await self.deployment_repository.save(deployment)
+
+        readiness = await self._readiness_snapshot(request.deployment_id)
         self._emit_operation_log(
             deployment_id=request.deployment_id,
             previous_status=previous_status,
             current_status=updated.status,
             reason=request.reason,
             restore_target=restore_target,
+            readiness_status=readiness.status.value if readiness is not None else None,
         )
 
         return RollbackResult(
@@ -124,6 +134,7 @@ class RollbackCoordinator:
             reason=request.reason,
             restored_to=restore_target,
             steps=steps,
+            readiness_status=readiness.status.value if readiness is not None else None,
         )
 
     # ------------------------------------------------------------------
@@ -163,6 +174,18 @@ class RollbackCoordinator:
     # Observability stub
     # ------------------------------------------------------------------
 
+    async def _readiness_snapshot(self, deployment_id: str) -> ReadinessRecord | None:
+        """Return the latest readiness record if readiness is wired in.
+
+        Rollback does not block on readiness, but it still snapshots the current
+        decision so the result can carry the readiness context.
+        """
+        controller = self.readiness_controller
+        if controller is None:
+            return None
+
+        return await controller.get_status(deployment_id=deployment_id)
+
     def _emit_operation_log(
         self,
         *,
@@ -171,6 +194,7 @@ class RollbackCoordinator:
         current_status: str,
         reason: str,
         restore_target: str,
+        readiness_status: str | None = None,
     ) -> None:
         # Operation logging is a future slice. This stub exists so the
         # coordinator shape is stable even before that repository is real.
@@ -180,6 +204,7 @@ class RollbackCoordinator:
             "current_status": current_status,
             "reason": reason,
             "restore_target": restore_target,
+            "readiness_status": readiness_status,
         }
         return
 

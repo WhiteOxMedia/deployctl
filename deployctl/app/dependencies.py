@@ -82,17 +82,22 @@ class ApplicationDependencies:
             raise KeyError("no dependency named 'probe_adapter'")
         return self._null_probe_adapter
 
-    async def create_schema(self) -> None:
-        """Create any missing tables.
+    async def ensure_schema(self) -> None:
+        """Conservative dev-only helper for local scratch databases.
 
-        Runs inside the application lifespan so the factory stays free of
-        blocking I/O and can be called from within a running event loop.
-        ``create_all`` only creates what is missing, so this is safe on every
-        start.
+        This is intentionally not called during normal application startup. The
+        server expects the Alembic migration chain to already have been applied
+        before it starts; if the required tables are missing it should fail
+        fast rather than silently recreating a schema that can drift away from
+        the migration state.
+
+        The only supported use for this method is ad-hoc scratch databases used
+        by developers locally, where the table shape is meant to follow
+        ``Base`` directly and nobody is relying on Alembic history.
         """
         if self.engine is None:
             raise RuntimeError(
-                "cannot create the schema: dependencies were built without "
+                "cannot ensure the schema: dependencies were built without "
                 "a database engine"
             )
         async with self.engine.begin() as conn:
@@ -107,9 +112,9 @@ class ApplicationDependencies:
 def build_dependencies(*, config: Config | None = None) -> ApplicationDependencies:
     """Build the application dependency container.
 
-    This only wires objects; it performs no database I/O. The schema is
-    created later by :meth:`ApplicationDependencies.create_schema`, which the
-    application lifespan awaits on startup.
+    This only wires objects; it performs no database I/O. The runtime relies on
+    the Alembic migration chain for its schema (applied by the startup lifespan
+    migrations) and never creates or alters tables itself.
     """
     if config is None:
         config = Config()

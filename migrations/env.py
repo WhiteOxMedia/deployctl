@@ -3,23 +3,34 @@
 This environment configures async migration support with `aiosqlite` and uses
 the project's declarative `Base` so generated migrations stay aligned with the
 real persistence models.
+
+Production schema creation runs through Alembic (via ``alembic upgrade
+head``), not through ``ApplicationDependencies.ensure_schema``; the latter is
+kept only as a dev-only helper for scratch databases and is explicitly
+documented as a non-authoritative fallback.
 """
 
 from __future__ import annotations
 
 from logging.config import fileConfig
 
+from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
-
-from alembic import context
 
 from deployctl.persistence.base import Base
 
 config = context.config
 
-if config.config_file_name is not None:
+# ``fileConfig`` replaces handlers on the root logger, which would silently
+# discard a caller's logging setup. Embedding callers opt out through
+# ``config.attributes``: the server does so to keep uvicorn's loggers usable for
+# startup failures, and the test suite does so to keep pytest's capture. A plain
+# ``alembic upgrade head`` run keeps the default.
+if config.config_file_name is not None and config.attributes.get(
+    "configure_logging", True
+):
     fileConfig(config.config_file_name)
 
 target_metadata = Base.metadata

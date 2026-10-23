@@ -74,8 +74,16 @@ class PromotionError(DomainError):
     """Raised when promotion cannot proceed."""
 
 
+class PromotionNotReadyError(PromotionError):
+    """Raised when promotion is blocked because the deployment is not ready."""
+
+
 class ExposureError(DomainError):
     """Raised when an exposure shift cannot be performed."""
+
+
+class ExposureNotReadyError(ExposureError):
+    """Raised when an exposure change is blocked because the deployment is not ready."""
 
 
 class CoordinationError(DomainError):
