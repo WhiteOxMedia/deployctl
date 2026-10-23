@@ -84,12 +84,38 @@ same statements on both dialects.
 
 The deployment, promotion, rollback, and exposure routes are `async def`
 handlers, so every request runs on the application's event loop and the engine
-keeps its default pool: a connection opened for one request is reused by the
-next. That replaced the earlier per-request design, where those handlers were
+keeps a real connection pool (no `NullPool`): a connection opened for one
+request is reused by the next. That replaced the earlier per-request design, where those handlers were
 synchronous and called `asyncio.run`, which forced `NullPool` because a pooled
 connection cannot be reused by a closed loop — SQLite tolerates that, `asyncpg`
 raises `Event loop is closed`. Going back to a loop per request means bringing
 that workaround back with it.
+
+The pool itself is tuned through `Config` rather than left to SQLAlchemy's
+defaults:
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `pool_size` | `5` | Connections kept open in the pool |
+| `max_overflow` | `10` | Extra connections allowed above `pool_size` |
+| `pool_recycle` | `1800` | Seconds before a pooled connection is replaced on checkout (`-1` disables it; the default keeps a connection from outliving a pooler or load balancer that drops idle ones) |
+
+`build_dependencies` passes them to `create_async_engine`, so a deployment sets
+its pool through the same `Config` it already uses for the database URL:
+
+```python
+config = Config(
+    database_url="postgresql+asyncpg://deploy:secret@db.internal:5432/deployctl",
+    pool_size=10,
+    max_overflow=20,
+    pool_recycle=900,
+)
+```
+
+A SQLite in-memory URL (`sqlite+aiosqlite:///:memory:`) is served by
+SQLAlchemy's `StaticPool` — one connection holding the one database — and that
+pool rejects sizing arguments, so those URLs are built without the settings
+rather than failing to start.
 
 Tests still use `NullPool` where one test drives a repository from several
 `asyncio.run` blocks, and helpers that only read schema or rows open and

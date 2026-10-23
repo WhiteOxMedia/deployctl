@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     async_sessionmaker,
@@ -87,6 +88,24 @@ class ApplicationDependencies:
             await self.engine.dispose()
 
 
+def _pool_options(config: Config) -> dict[str, Any]:
+    """Engine pool tuning from ``Config``, or none where a pool cannot apply.
+
+    A SQLite in-memory database is served by SQLAlchemy's ``StaticPool`` — one
+    connection holding the one database — and that pool rejects sizing
+    arguments, so those URLs keep the dialect's default rather than failing to
+    build an engine.
+    """
+    url = make_url(config.engine_url())
+    if url.get_backend_name() == "sqlite" and url.database in (None, "", ":memory:"):
+        return {}
+    return {
+        "pool_size": config.pool_size,
+        "max_overflow": config.max_overflow,
+        "pool_recycle": config.pool_recycle,
+    }
+
+
 def build_dependencies(*, config: Config | None = None) -> ApplicationDependencies:
     """Build the application dependency container.
 
@@ -105,7 +124,9 @@ def build_dependencies(*, config: Config | None = None) -> ApplicationDependenci
     # the default pool be used here: a per-request ``asyncio.run`` would park a
     # connection on a loop that closes, and asyncpg rejects reusing it (SQLite
     # tolerates it, which is why that defect only ever showed up on a server).
-    engine = create_async_engine(config.engine_url())
+    # The pool is sized from ``Config`` instead of SQLAlchemy's defaults so a
+    # deployment can tune it without the app hardcoding a size.
+    engine = create_async_engine(config.engine_url(), **_pool_options(config))
     factory = async_sessionmaker(engine, expire_on_commit=False)
     deps.engine = engine
     deps.session_factory = factory
