@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from datetime import UTC, datetime
 from typing import Any
 
@@ -25,12 +24,17 @@ class DeploymentService:
     It depends on a DeploymentRepository implementation. Until the persistence
     layer is wired, this remains authoritarian about its contract and raises
     domain errors for invalid input.
+
+    The methods are coroutines rather than synchronous wrappers around
+    ``asyncio.run``: the API handlers are ``async def`` and share the
+    application's event loop, so a repository connection can be reused across
+    requests instead of being tied to a throwaway loop per request.
     """
 
     def __init__(self, *, deployment_repository: DeploymentRepository) -> None:
         self._deployment_repository = deployment_repository
 
-    def create_deployment(self, payload: dict[str, Any]) -> dict[str, Any]:
+    async def create_deployment(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Create a deployment from an API payload.
 
         This is the first endpoint-backed use case. It validates the minimum
@@ -51,7 +55,7 @@ class DeploymentService:
             )
 
         deployment_id = payload.get("deployment_id") or self._generate_deployment_id()
-        existing = asyncio.run(self._deployment_repository.get_by_id(deployment_id))
+        existing = await self._deployment_repository.get_by_id(deployment_id)
         if existing is not None:
             raise DeploymentDuplicateError(
                 message=f"deployment already exists: {deployment_id}",
@@ -66,12 +70,12 @@ class DeploymentService:
             created_at=datetime.now(UTC).isoformat(),
         )
 
-        saved = asyncio.run(self._deployment_repository.save(deployment))
+        saved = await self._deployment_repository.save(deployment)
         return self._deployment_to_payload(saved)
 
-    def get_deployment(self, deployment_id: str) -> dict[str, Any]:
+    async def get_deployment(self, deployment_id: str) -> dict[str, Any]:
         """Retrieve a deployment by id."""
-        deployment = asyncio.run(self._deployment_repository.get_by_id(deployment_id))
+        deployment = await self._deployment_repository.get_by_id(deployment_id)
         if deployment is None:
             raise DeploymentNotFoundError(
                 message=f"deployment not found: {deployment_id}",

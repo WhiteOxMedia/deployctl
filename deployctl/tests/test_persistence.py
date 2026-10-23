@@ -36,11 +36,11 @@ def engine(config):
     ``config`` comes from ``conftest`` and disables startup migrations, so the
     Alembic chain is applied exactly once per test by the shared fixture.
 
-    These tests interleave explicit ``asyncio.run()`` blocks with the
-    synchronous service, which starts its own loop per call. ``NullPool`` keeps
-    every connection inside the loop that opened it: SQLite happens to tolerate
-    a pooled connection being reused across loops, ``asyncpg`` raises "Event
-    loop is closed".
+    These tests drive the repository from several separate ``asyncio.run()``
+    blocks, so ``NullPool`` keeps every connection inside the loop that opened
+    it: SQLite happens to tolerate a pooled connection being reused across
+    loops, ``asyncpg`` raises "Event loop is closed". The application's own
+    engine is unaffected because its handlers share one loop.
     """
     engine = create_async_engine(config.engine_url(), poolclass=NullPool)
     yield engine
@@ -124,19 +124,22 @@ def test_deployment_duplicate_rejected_db(client_full):
     assert found.status == "planned"
 
 
-def test_app_engine_keeps_connections_out_of_the_pool(
+def test_app_engine_pools_connections_across_requests(
     config: Config, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A request must not leave a connection for the next request's event loop.
+    """Requests share the app's event loop, so the engine pools connections.
 
-    The deployment routes are synchronous handlers that call ``asyncio.run`` per
-    request, so each request runs on a fresh loop. A pooled engine would park
-    request 1's connection in the pool and hand it to request 2, which asyncpg
-    rejects with "Event loop is closed"; SQLite tolerates exactly that, so the
-    Postgres lane was the only thing that noticed when the pool came back.
+    This replaces the earlier per-request ``NullPool`` guard. Now that the
+    deployment routes are ``async def``, a connection opened for one request
+    belongs to the same loop as the next request and can be reused, so pooling
+    is the point again; the assertions fail if the engine goes back to
+    ``NullPool``, the workaround this change removes.
 
-    This asserts the property the fix relies on, locally and on every dialect:
-    the app's engine never holds a connection between requests.
+    The other half of that pairing cannot be asserted here — a handler that
+    starts its own loop still works on SQLite — but it is enforced twice over:
+    ``await`` inside a ``def`` is a syntax error, and the two DB-backed requests
+    below are the same pair the Postgres lane runs against ``postgres:17``,
+    where asyncpg rejects a connection from a closed loop.
     """
     engines: list[AsyncEngine] = []
     real_create_async_engine = dependencies_module.create_async_engine
@@ -158,19 +161,20 @@ def test_app_engine_keeps_connections_out_of_the_pool(
         created = client.post(
             "/api/v1/deployments/",
             json={
-                "description": "loop-owned connection",
-                "artifact_ref": "artifact://example/loop-owned@v1",
+                "description": "pooled connection",
+                "artifact_ref": "artifact://example/pooled@v1",
             },
         )
         assert created.status_code == 201, created.text
 
-        # Nothing is kept for a later request: the engine hands every loop its
-        # own connection and closes it on release.
-        assert isinstance(engine.pool, NullPool), (
-            "the app engine must not pool connections: each sync request runs "
-            "on its own event loop, and asyncpg rejects a connection opened on "
-            "a closed one (see build_dependencies)"
-        )
+        # The connection came back to the pool for the next request instead of
+        # being opened and thrown away per request.
+        assert not isinstance(engine.pool, NullPool)
+        assert engine.pool.checkedin() >= 1
+
+        deployment_id = created.json()["deployment_id"]
+        fetched = client.get(f"/api/v1/deployments/{deployment_id}")
+        assert fetched.status_code == 200, fetched.text
 
 
 def test_deployment_create_and_get_via_service(client_full):
@@ -181,10 +185,13 @@ def test_deployment_create_and_get_via_service(client_full):
         "artifact_ref": "artifact://example/service@v1",
     }
 
-    created = service.create_deployment(payload)
-    assert created["status"] == "planned"
+    async def _run() -> tuple[dict, dict]:
+        created = await service.create_deployment(payload)
+        retrieved = await service.get_deployment(created["deployment_id"])
+        return created, retrieved
 
-    retrieved = service.get_deployment(created["deployment_id"])
+    created, retrieved = async_run(_run)
+    assert created["status"] == "planned"
     assert retrieved["deployment_id"] == created["deployment_id"]
     assert retrieved["description"] == payload["description"]
     assert retrieved["artifact_ref"] == payload["artifact_ref"]

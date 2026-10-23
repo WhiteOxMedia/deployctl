@@ -9,7 +9,6 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
-from sqlalchemy.pool import NullPool
 
 from deployctl.app.config import Config
 from deployctl.app.null_adapters import (
@@ -100,15 +99,13 @@ def build_dependencies(*, config: Config | None = None) -> ApplicationDependenci
 
     deps = ApplicationDependencies(config=config)
 
-    # The deployment, promotion, rollback, and exposure routes are synchronous
-    # handlers that call ``asyncio.run`` per request, so each request runs on a
-    # fresh event loop. A pooled connection opened on one of those loops cannot
-    # be used by the next one: SQLite tolerates it, asyncpg raises "Event loop
-    # is closed". ``NullPool`` keeps every connection inside the loop that
-    # opened it, so sequential requests work on any dialect. It is also why the
-    # app opens a connection per request; move back to a pool once the handlers
-    # are ``async def`` and share the application loop.
-    engine = create_async_engine(config.engine_url(), poolclass=NullPool)
+    # The deployment, promotion, rollback, and exposure routes are ``async def``
+    # handlers, so every request runs on the application's event loop and a
+    # pooled connection stays with the loop that opened it. That is what lets
+    # the default pool be used here: a per-request ``asyncio.run`` would park a
+    # connection on a loop that closes, and asyncpg rejects reusing it (SQLite
+    # tolerates it, which is why that defect only ever showed up on a server).
+    engine = create_async_engine(config.engine_url())
     factory = async_sessionmaker(engine, expire_on_commit=False)
     deps.engine = engine
     deps.session_factory = factory

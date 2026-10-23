@@ -82,19 +82,21 @@ Schema and row assertions go through SQLAlchemy reflection and bound SQL rather
 than `sqlite3` / `sqlite_master`, so the startup and persistence checks are the
 same statements on both dialects.
 
-The app engine is built with `NullPool`. The deployment, promotion, rollback,
-and exposure routes are synchronous handlers that call `asyncio.run` per
-request, so each request runs on its own event loop and cannot reuse a
-connection opened on the previous one; SQLite tolerates that, `asyncpg` raises
-`Event loop is closed`. Opening a connection per request is the price of that
-design until those handlers become `async def` and share the application loop.
+The deployment, promotion, rollback, and exposure routes are `async def`
+handlers, so every request runs on the application's event loop and the engine
+keeps its default pool: a connection opened for one request is reused by the
+next. That replaced the earlier per-request design, where those handlers were
+synchronous and called `asyncio.run`, which forced `NullPool` because a pooled
+connection cannot be reused by a closed loop — SQLite tolerates that, `asyncpg`
+raises `Event loop is closed`. Going back to a loop per request means bringing
+that workaround back with it.
 
-The tests use the same discipline: any engine a test drives across several
-`asyncio.run` blocks — the persistence suite reading through the synchronous
-service, for instance — is created with `NullPool`, and helpers that only read
-schema or rows open and dispose one engine per call. That keeps every
-connection inside the loop that opened it, which is what makes these suites
-pass on Postgres instead of only on SQLite.
+Tests still use `NullPool` where one test drives a repository from several
+`asyncio.run` blocks, and helpers that only read schema or rows open and
+dispose one engine per call. That keeps every connection inside the loop that
+opened it; the application's own engine is unaffected because its handlers
+share a single loop, which is what makes these suites pass on Postgres instead
+of only on SQLite.
 
 ## Running the tests
 

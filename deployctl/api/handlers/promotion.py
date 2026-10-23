@@ -26,7 +26,7 @@ class PromotionRouter:
         router = APIRouter(prefix="/promotions")
 
         @router.post("/{deployment_id}/promote", status_code=200)
-        def promote(deployment_id: str, body: dict) -> JSONResponse:
+        async def promote(deployment_id: str, body: dict) -> JSONResponse:
             raise HTTPException(status_code=501, detail="not implemented")
 
         return router
