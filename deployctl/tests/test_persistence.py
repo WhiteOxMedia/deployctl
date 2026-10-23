@@ -8,12 +8,13 @@ confirm the control plane is stateful end to end.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterator
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy.ext.asyncio import async_sessionmaker
+from sqlalchemy.pool import NullPool
 
-from deployctl.persistence.engine import create_engine
+from deployctl.persistence.engine import create_async_engine, create_session_factory
 from deployctl.persistence.repository import SqlAlchemyDeploymentRepository
 from deployctl.service.deployments.deployment_service import DeploymentService
 
@@ -29,17 +30,24 @@ def engine(config):
 
     ``config`` comes from ``conftest`` and disables startup migrations, so the
     Alembic chain is applied exactly once per test by the shared fixture.
+
+    These tests interleave explicit ``asyncio.run()`` blocks with the
+    synchronous service, which starts its own loop per call. ``NullPool`` keeps
+    every connection inside the loop that opened it: SQLite happens to tolerate
+    a pooled connection being reused across loops, ``asyncpg`` raises "Event
+    loop is closed".
     """
-    return create_engine(config)
+    engine = create_async_engine(config.engine_url(), poolclass=NullPool)
+    yield engine
+    async_run(engine.dispose)
 
 
 @pytest.fixture
-def client_full(app_client: TestClient, engine):
-    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+def client_full(app_client: TestClient, engine) -> Iterator[tuple]:
+    session_factory = create_session_factory(engine)
     repo = SqlAlchemyDeploymentRepository(session_factory=session_factory)
     service = DeploymentService(deployment_repository=repo)
     yield app_client, repo, service
-    async_run(engine.dispose)
 
 
 def test_system_health_still_works(client_full):

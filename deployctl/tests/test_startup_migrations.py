@@ -1,16 +1,22 @@
-"""Startup migration idempotency tests.
+"""Startup migration tests.
 
 The server lifespan runs ``alembic upgrade head`` when
 ``Config.apply_migrations_on_startup`` is set. These tests start the real app
 against a database that already has the full migration chain applied and assert
 the repeated run is a no-op: no "table already exists" failure, no tables
 dropped or recreated, and existing rows left intact.
+
+The database under test comes from ``blank_database_url``, so the same
+assertions run against the throwaway SQLite file locally and against the
+Postgres service in CI. Schema and row checks go through SQLAlchemy reflection
+and bound SQL rather than ``sqlite3``, so neither dialect is favoured and the
+startup path is exercised the same way on both.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
-import sqlite3
 from pathlib import Path
 
 import pytest
@@ -20,53 +26,50 @@ from deployctl.app import server as server_module
 from deployctl.app.config import Config
 from deployctl.app.server import create_app
 from deployctl.persistence.base import Base
-from deployctl.tests._alembic_helpers import apply_migration_chain
+from deployctl.tests._alembic_helpers import (
+    alembic_revision,
+    apply_migration_chain,
+    blank_database_url,
+    deployment_rows,
+    insert_deployment,
+    table_names,
+)
 
 CANARY_ID = "deploy-canary"
 
-
-def _table_names(database_path: Path) -> set[str]:
-    with sqlite3.connect(database_path) as conn:
-        rows = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
-        ).fetchall()
-    return {row[0] for row in rows}
+EXPECTED_TABLES = {"alembic_version", "deployments", "readiness"}
 
 
-def _alembic_revision(database_path: Path) -> str:
-    with sqlite3.connect(database_path) as conn:
-        row = conn.execute("SELECT version_num FROM alembic_version").fetchone()
-    assert row is not None, "alembic_version should have a current revision"
-    return row[0]
+@pytest.fixture
+def database_url(tmp_path: Path) -> str:
+    """An empty database on whichever dialect this run targets.
 
-
-def _deployments(database_path: Path) -> list[tuple[str, str, str, str]]:
-    with sqlite3.connect(database_path) as conn:
-        rows = conn.execute(
-            "SELECT id, description, artifact_ref, status FROM deployments"
-        ).fetchall()
-    return [(row[0], row[1], row[2], row[3]) for row in rows]
+    Locally that is a throwaway SQLite file; under
+    ``DEPLOYCTL_TEST_DATABASE_URL`` it is the shared server database emptied
+    back to a bare ``public`` schema, which is what lets a cold start and a
+    repeat startup run be asserted against Postgres too.
+    """
+    return blank_database_url(tmp_path)
 
 
 def test_startup_migrations_are_idempotent_on_migrated_database(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    database_url: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    database_path = tmp_path / "already-migrated.db"
-    database_url = f"sqlite+aiosqlite:///{database_path}"
-
     apply_migration_chain(database_url)
 
-    tables_before = _table_names(database_path)
-    assert {"alembic_version", "deployments", "readiness"} <= tables_before
-    assert _alembic_revision(database_path) == "002"
+    tables_before = asyncio.run(table_names(database_url))
+    assert EXPECTED_TABLES <= tables_before
+    assert asyncio.run(alembic_revision(database_url)) == "002"
 
-    with sqlite3.connect(database_path) as conn:
-        conn.execute(
-            "INSERT INTO deployments (id, description, artifact_ref, status)"
-            " VALUES (?, ?, ?, ?)",
-            (CANARY_ID, "canary", "artifact://canary@v1", "planned"),
+    asyncio.run(
+        insert_deployment(
+            database_url,
+            deployment_id=CANARY_ID,
+            description="canary",
+            artifact_ref="artifact://canary@v1",
         )
-    rows_before = _deployments(database_path)
+    )
+    rows_before = asyncio.run(deployment_rows(database_url))
     assert [row[0] for row in rows_before] == [CANARY_ID]
 
     # Count the lifespan migration runs while still executing the real ones, so
@@ -89,26 +92,22 @@ def test_startup_migrations_are_idempotent_on_migrated_database(
             assert response.status_code == 200, response.text
             assert response.json()["ok"] is True
 
-        assert _table_names(database_path) == tables_before
-        assert _alembic_revision(database_path) == "002"
-        assert _deployments(database_path) == rows_before
+        assert asyncio.run(table_names(database_url)) == tables_before
+        assert asyncio.run(alembic_revision(database_url)) == "002"
+        assert asyncio.run(deployment_rows(database_url)) == rows_before
 
     assert migration_calls == [database_url, database_url]
 
 
-def test_startup_migrates_empty_database_to_head(tmp_path: Path) -> None:
+def test_startup_migrates_empty_database_to_head(database_url: str) -> None:
     """A cold start must bring an empty database to head before serving."""
-    database_path = tmp_path / "cold-start.db"
-    assert not database_path.exists()
-    database_url = f"sqlite+aiosqlite:///{database_path}"
+    assert asyncio.run(table_names(database_url)) == set()
 
     app = create_app(config=Config(database_url=database_url))
     with TestClient(app) as client:
         # The lifespan has already completed when the first request is served.
-        assert _alembic_revision(database_path) == "002"
-        assert {"alembic_version", "deployments", "readiness"} <= _table_names(
-            database_path
-        )
+        assert asyncio.run(alembic_revision(database_url)) == "002"
+        assert EXPECTED_TABLES <= asyncio.run(table_names(database_url))
 
         assert client.get("/api/v1/system/health").status_code == 200
 
@@ -126,16 +125,15 @@ def test_startup_migrates_empty_database_to_head(tmp_path: Path) -> None:
         assert fetched.status_code == 200, fetched.text
         assert fetched.json()["deployment_id"] == deployment_id
 
-    assert [row[0] for row in _deployments(database_path)] == [deployment_id]
+    assert [row[0] for row in asyncio.run(deployment_rows(database_url))] == [
+        deployment_id
+    ]
 
 
 def test_startup_migrations_can_be_disabled(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    database_url: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """``apply_migrations_on_startup=False`` must skip the lifespan run."""
-    database_path = tmp_path / "unmigrated.db"
-    database_path.touch()  # a valid but completely empty SQLite database
-    database_url = f"sqlite+aiosqlite:///{database_path}"
 
     def _forbidden_migration_run(*, config: Config) -> None:
         raise AssertionError(
@@ -155,17 +153,13 @@ def test_startup_migrations_can_be_disabled(
         assert client.get("/api/v1/system/health").status_code == 200
 
     # ...and the empty database is left exactly as it was.
-    assert _table_names(database_path) == set()
+    assert asyncio.run(table_names(database_url)) == set()
 
 
 def test_readiness_fails_without_creating_schema_when_migrations_disabled(
-    tmp_path: Path,
+    database_url: str,
 ) -> None:
     """The documented "readiness table missing" case: fail, never create schema."""
-    database_path = tmp_path / "unmigrated.db"
-    database_path.touch()  # empty database, no migration chain applied
-    database_url = f"sqlite+aiosqlite:///{database_path}"
-
     config = Config(
         database_url=database_url,
         apply_migrations_on_startup=False,
@@ -179,16 +173,13 @@ def test_readiness_fails_without_creating_schema_when_migrations_disabled(
         assert response.status_code == 500, response.text
 
     # Nothing raced in to create the missing schema.
-    assert _table_names(database_path) == set()
+    assert asyncio.run(table_names(database_url)) == set()
 
 
 def test_failing_startup_migration_aborts_before_serving(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    database_url: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A failed migration must abort startup instead of serving a partial schema."""
-    database_path = tmp_path / "partial.db"
-    database_url = f"sqlite+aiosqlite:///{database_path}"
-
     real_upgrade = server_module.command.upgrade
 
     def _failing_upgrade(cfg, revision: str) -> None:
@@ -213,8 +204,8 @@ def test_failing_startup_migration_aborts_before_serving(
     assert database_url in str(excinfo.value)
     assert isinstance(excinfo.value.__cause__, RuntimeError)
 
-    assert _alembic_revision(database_path) == "001"
-    assert "readiness" not in _table_names(database_path)
+    assert asyncio.run(alembic_revision(database_url)) == "001"
+    assert "readiness" not in asyncio.run(table_names(database_url))
 
 
 def test_password_bearing_startup_failure_is_redacted(
@@ -257,12 +248,9 @@ def test_password_bearing_startup_failure_is_redacted(
 
 
 def test_schema_never_created_from_orm_metadata(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    database_url: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Startup and request paths must get their schema from Alembic only."""
-    database_path = tmp_path / "migrations-only.db"
-    database_url = f"sqlite+aiosqlite:///{database_path}"
-
     create_all_calls: list[str] = []
 
     def _forbidden_create_all(*args, **kwargs) -> None:
@@ -276,7 +264,7 @@ def test_schema_never_created_from_orm_metadata(
     app = create_app(config=Config(database_url=database_url))
     with TestClient(app) as client:
         # Startup migrated the empty database through Alembic alone.
-        assert _alembic_revision(database_path) == "002"
+        assert asyncio.run(alembic_revision(database_url)) == "002"
 
         created = client.post(
             "/api/v1/deployments/",
@@ -300,11 +288,9 @@ def test_schema_never_created_from_orm_metadata(
 
 
 def test_noop_startup_logs_no_upgrade_lines(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
+    database_url: str, caplog: pytest.LogCaptureFixture
 ) -> None:
     """An already-migrated database logs context only, no upgrade work."""
-    database_path = tmp_path / "already-migrated.db"
-    database_url = f"sqlite+aiosqlite:///{database_path}"
     apply_migration_chain(database_url)
 
     # Drop the records from preparing the database so only startup is measured.
@@ -322,12 +308,9 @@ def test_noop_startup_logs_no_upgrade_lines(
 
 
 def test_cold_start_logs_upgrade_lines(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
+    database_url: str, caplog: pytest.LogCaptureFixture
 ) -> None:
     """A cold start logs an upgrade line for each revision it applies."""
-    database_path = tmp_path / "cold-start-logged.db"
-    database_url = f"sqlite+aiosqlite:///{database_path}"
-
     caplog.set_level(logging.INFO, logger="alembic")
 
     with TestClient(create_app(config=Config(database_url=database_url))):
