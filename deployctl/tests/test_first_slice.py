@@ -7,6 +7,7 @@ from collections.abc import Iterator
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.pool import NullPool
 
 from deployctl.domain.aggregate.deployment import Deployment
 from deployctl.domain.errors import (
@@ -22,6 +23,17 @@ from deployctl.service.deployments.deployment_service import DeploymentService
 def client(app_client: TestClient) -> Iterator[TestClient]:
     """The shared app client, backed by the migration-created database."""
     yield app_client
+
+
+def _loop_owned_engine(database_url: str):
+    """An engine whose connections never outlive the loop that opened them.
+
+    These tests interleave explicit ``asyncio.run()`` blocks with the
+    synchronous ``DeploymentService``, which starts its own loop per call. A
+    pooled engine would hand a connection opened on one loop to the next, which
+    SQLite happens to tolerate and a server dialect (asyncpg) rejects.
+    """
+    return create_async_engine(database_url, poolclass=NullPool)
 
 
 def test_deployment_create_and_get(client: TestClient) -> None:
@@ -54,7 +66,7 @@ def test_deployment_create_requires_description(client: TestClient) -> None:
 
 
 def test_deployment_create_duplicate_rejected(migrated_database_url: str) -> None:
-    engine = create_async_engine(migrated_database_url)
+    engine = _loop_owned_engine(migrated_database_url)
     factory = create_session_factory(engine)
     repo = SqlAlchemyDeploymentRepository(session_factory=factory)
     service = DeploymentService(deployment_repository=repo)
@@ -88,7 +100,7 @@ def test_deployment_create_duplicate_rejected(migrated_database_url: str) -> Non
 
 
 def test_deployment_get_unknown(migrated_database_url: str) -> None:
-    engine = create_async_engine(migrated_database_url)
+    engine = _loop_owned_engine(migrated_database_url)
     factory = create_session_factory(engine)
     repo = SqlAlchemyDeploymentRepository(session_factory=factory)
     service = DeploymentService(deployment_repository=repo)
