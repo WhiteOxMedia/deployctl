@@ -158,12 +158,7 @@ jobs:
           asyncio.run(main())
           PY
 
-      - name: Endpoint suites on Postgres
+      - name: Full suite on Postgres
         run: |
           export DEPLOYCTL_TEST_DATABASE_URL="$DATABASE_URL"
-          pytest -q \
-            deployctl/tests/test_first_slice.py \
-            deployctl/tests/test_promotion_endpoint.py \
-            deployctl/tests/test_rollback_endpoint.py \
-            deployctl/tests/test_exposure_endpoint.py \
-            deployctl/tests/test_readiness_endpoint.py
+          pytest -q

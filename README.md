@@ -54,29 +54,33 @@ The environment is configured for async SQLite via `aiosqlite`, and the local
 test run uses SQLite. CI also has a Postgres lane that applies this chain to a
 `postgres:17` service with `asyncpg`, runs a repository smoke test (save and read
 back a deployment, then save and read a readiness record), and then runs the
-endpoint suites — deployments, promotion, rollback, exposure, and readiness —
-against the same server, so the schema and the HTTP surface are both exercised
-on both dialects. `asyncpg` is installed only in that job rather than declared
-as a runtime dependency. The `sqlalchemy.url` in `alembic.ini` is a placeholder;
-in deployment it should be overridden through the same configuration path the
-app uses.
+whole test suite against that server. That includes the endpoint suites
+(deployments, promotion, rollback, exposure, readiness), the persistence suite,
+and the startup-migration suite, so the schema, the HTTP surface, and the
+startup path are exercised on both dialects. `asyncpg` is installed only in
+that job rather than declared as a runtime dependency. The `sqlalchemy.url` in
+`alembic.ini` is a placeholder; in deployment it should be overridden through
+the same configuration path the app uses.
 
 The test fixtures use a throwaway SQLite file by default. Setting
 `DEPLOYCTL_TEST_DATABASE_URL` points them at a server database instead, which is
-how the Postgres lane runs the endpoint tests:
+how the Postgres lane runs the suite:
 
 ```bash
 DEPLOYCTL_TEST_DATABASE_URL=postgresql+asyncpg://user:pass@127.0.0.1:5432/deployctl \
-  pytest -q deployctl/tests/test_first_slice.py \
-    deployctl/tests/test_promotion_endpoint.py \
-    deployctl/tests/test_rollback_endpoint.py \
-    deployctl/tests/test_exposure_endpoint.py \
-    deployctl/tests/test_readiness_endpoint.py
+  pytest -q
 ```
 
 That fixture drops and recreates the `public` schema before applying the chain,
 so every test starts from an empty database and the schema still comes from
-Alembic. Point it only at a database whose contents you are willing to lose.
+Alembic. Tests that need a database with no schema at all — the startup
+migration suite does, so it can assert a real cold start and a repeat startup
+run — get the same treatment and then start from the empty schema. Point it only
+at a database whose contents you are willing to lose.
+
+Schema and row assertions go through SQLAlchemy reflection and bound SQL rather
+than `sqlite3` / `sqlite_master`, so the startup and persistence checks are the
+same statements on both dialects.
 
 The app engine is built with `NullPool`. The deployment, promotion, rollback,
 and exposure routes are synchronous handlers that call `asyncio.run` per
@@ -84,6 +88,13 @@ request, so each request runs on its own event loop and cannot reuse a
 connection opened on the previous one; SQLite tolerates that, `asyncpg` raises
 `Event loop is closed`. Opening a connection per request is the price of that
 design until those handlers become `async def` and share the application loop.
+
+The tests use the same discipline: any engine a test drives across several
+`asyncio.run` blocks — the persistence suite reading through the synchronous
+service, for instance — is created with `NullPool`, and helpers that only read
+schema or rows open and dispose one engine per call. That keeps every
+connection inside the loop that opened it, which is what makes these suites
+pass on Postgres instead of only on SQLite.
 
 ## Running the tests
 
