@@ -48,3 +48,50 @@ coverage.xml
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+
+# Test databases and scratch output
+*.db
+*.tmp
+*.zip
+tmp_*
+_*.txt
+_*.html
+
+# Workspace-only files kept on disk but not tracked in this repository.
+# These belong to the surrounding Kraken Scout workspace, not to deployctl.
+# Remove an entry when the file is ready to be committed here.
+COORDINATION_AUDIT_RESULTS.md
+DIRECTIVE_REPO_NATIVE_*.md
+final_report.md
+reality_check.md
+record.md
+release-manifest.json
+ssr_floor.patch
+scout_app.json
+Launch Kraken.bat
+start.bat
+build_ruleset.py
+extract_app.py
+manifest_verification_harness.py
+reality_check.py
+_manifest_fix.py
+tmp_rt_routes.py
+cmd_5_component_*.sh
+run_5_component_first_step.*
+scripted_5_component_first_step.sh
+test_e2e_acceptance.py
+test_push_prefs_api.py
+test_scout_app_lifecycle.py
+verify_scout_push_client.py
+installer/
+scout/
+pool/
+monero_project/
+schemas/
+domain/
+model/
+aggregates/
+tools/
+scratch/
+zip_probe/
+_probe_state_dir/
