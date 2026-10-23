@@ -24,6 +24,30 @@ jobs:
           pip install --require-hashes -r requirements.lock
           pip install -e . --no-deps
 
+      - name: Migrate a fresh database
+        run: |
+          rm -f deployctl.db
+          python -m alembic upgrade head
+          python -m alembic upgrade head
+          python -m alembic current | grep -q "002"
+          python - <<'PY'
+          import sqlite3
+
+          with sqlite3.connect("deployctl.db") as conn:
+              tables = {
+                  row[0]
+                  for row in conn.execute(
+                      "SELECT name FROM sqlite_master WHERE type='table'"
+                  )
+              }
+
+          expected = {"alembic_version", "deployments", "readiness"}
+          missing = expected - tables
+          assert not missing, f"missing tables: {sorted(missing)}"
+          print("migrated tables:", sorted(tables))
+          PY
+          rm -f deployctl.db
+
       - name: Ruff
         run: ruff check deployctl tests
 
