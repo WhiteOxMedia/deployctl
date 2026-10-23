@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -38,7 +37,7 @@ class DeploymentRouter:
         router = APIRouter(prefix="/deployments")
 
         @router.post("/", status_code=201)
-        def create_deployment(body: dict) -> JSONResponse:
+        async def create_deployment(body: dict) -> JSONResponse:
             service = self.dependencies.deployment_service
             if service is None:
                 raise HTTPException(
@@ -46,7 +45,7 @@ class DeploymentRouter:
                     detail="deployment service not wired",
                 )
             try:
-                result = service.create_deployment(body)
+                result = await service.create_deployment(body)
             except DeploymentIntentError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
             except DeploymentDuplicateError as exc:
@@ -54,7 +53,7 @@ class DeploymentRouter:
             return JSONResponse(content=result, status_code=201)
 
         @router.get("/{deployment_id}")
-        def get_deployment(deployment_id: str) -> JSONResponse:
+        async def get_deployment(deployment_id: str) -> JSONResponse:
             service = self.dependencies.deployment_service
             if service is None:
                 raise HTTPException(
@@ -62,13 +61,13 @@ class DeploymentRouter:
                     detail="deployment service not wired",
                 )
             try:
-                result = service.get_deployment(deployment_id)
+                result = await service.get_deployment(deployment_id)
             except DeploymentNotFoundError as exc:
                 raise HTTPException(status_code=404, detail=str(exc)) from exc
             return JSONResponse(content=result)
 
         @router.post("/{deployment_id}/rollback", status_code=200)
-        def rollback_deployment(deployment_id: str, body: dict) -> JSONResponse:
+        async def rollback_deployment(deployment_id: str, body: dict) -> JSONResponse:
             service = self.dependencies.deployment_service
             coordinator = self.dependencies.rollback_coordinator
             if service is None or coordinator is None:
@@ -77,13 +76,11 @@ class DeploymentRouter:
                     detail="rollback surface not wired",
                 )
             try:
-                result = asyncio.run(
-                    coordinator.rollback(
-                        RollbackRequest(
-                            deployment_id=deployment_id,
-                            reason=body.get("reason", ""),
-                            target_artifact_ref=body.get("target_artifact_ref"),
-                        )
+                result = await coordinator.rollback(
+                    RollbackRequest(
+                        deployment_id=deployment_id,
+                        reason=body.get("reason", ""),
+                        target_artifact_ref=body.get("target_artifact_ref"),
                     )
                 )
             except DeploymentNotFoundError as exc:
@@ -95,7 +92,7 @@ class DeploymentRouter:
             return JSONResponse(content=result)
 
         @router.post("/{deployment_id}/promote", status_code=200)
-        def promote_deployment(deployment_id: str, body: dict) -> JSONResponse:
+        async def promote_deployment(deployment_id: str, body: dict) -> JSONResponse:
             service = self.dependencies.deployment_service
             engine = self.dependencies.promotion_engine
             if service is None or engine is None:
@@ -104,12 +101,10 @@ class DeploymentRouter:
                     detail="promotion surface not wired",
                 )
             try:
-                result = asyncio.run(
-                    engine.promote(
-                        PromotionEntry(
-                            deployment_id=deployment_id,
-                            reason=body.get("reason", ""),
-                        )
+                result = await engine.promote(
+                    PromotionEntry(
+                        deployment_id=deployment_id,
+                        reason=body.get("reason", ""),
                     )
                 )
             except DeploymentNotFoundError as exc:
@@ -117,7 +112,7 @@ class DeploymentRouter:
             return JSONResponse(content=result)
 
         @router.post("/{deployment_id}/exposure", status_code=200)
-        def adjust_exposure(deployment_id: str, body: dict) -> JSONResponse:
+        async def adjust_exposure(deployment_id: str, body: dict) -> JSONResponse:
             service = self.dependencies.deployment_service
             controller = self.dependencies.exposure_controller
             if service is None or controller is None:
@@ -126,14 +121,12 @@ class DeploymentRouter:
                     detail="exposure surface not wired",
                 )
             try:
-                result = asyncio.run(
-                    controller.shift(
-                        ExposureRequest(
-                            deployment_id=deployment_id,
-                            action=body.get("action", "status"),
-                            slice_params=body.get("slice_params"),
-                            route_id=body.get("route_id"),
-                        )
+                result = await controller.shift(
+                    ExposureRequest(
+                        deployment_id=deployment_id,
+                        action=body.get("action", "status"),
+                        slice_params=body.get("slice_params"),
+                        route_id=body.get("route_id"),
                     )
                 )
             except DeploymentNotFoundError as exc:

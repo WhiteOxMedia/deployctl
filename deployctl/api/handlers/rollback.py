@@ -26,7 +26,7 @@ class RollbackRouter:
         router = APIRouter(prefix="/rollbacks")
 
         @router.post("/{deployment_id}/rollback", status_code=200)
-        def rollback(deployment_id: str, body: dict) -> JSONResponse:
+        async def rollback(deployment_id: str, body: dict) -> JSONResponse:
             raise HTTPException(status_code=501, detail="not implemented")
 
         return router

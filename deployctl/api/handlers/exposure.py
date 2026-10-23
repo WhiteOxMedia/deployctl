@@ -26,7 +26,7 @@ class ExposureRouter:
         router = APIRouter(prefix="/exposures")
 
         @router.post("/{deployment_id}/exposure", status_code=200)
-        def adjust_exposure(deployment_id: str, body: dict) -> JSONResponse:
+        async def adjust_exposure(deployment_id: str, body: dict) -> JSONResponse:
             raise HTTPException(status_code=501, detail="not implemented")
 
         return router
