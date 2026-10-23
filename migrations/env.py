@@ -4,10 +4,9 @@ This environment configures async migration support with `aiosqlite` and uses
 the project's declarative `Base` so generated migrations stay aligned with the
 real persistence models.
 
-Production schema creation runs through Alembic (via ``alembic upgrade
-head``), not through ``ApplicationDependencies.ensure_schema``; the latter is
-kept only as a dev-only helper for scratch databases and is explicitly
-documented as a non-authoritative fallback.
+Schema creation runs through Alembic (via ``alembic upgrade head``, which the
+server's startup lifespan applies). The application never creates tables from
+the ORM metadata.
 """
 
 from __future__ import annotations

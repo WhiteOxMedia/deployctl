@@ -17,7 +17,6 @@ from deployctl.app.null_adapters import (
     NullPromotionAdapter,
     NullRegistryAdapter,
 )
-from deployctl.persistence.base import Base
 from deployctl.persistence.readiness_repository import SqlAlchemyReadinessRepository
 from deployctl.persistence.repository import (
     DeploymentRepository,
@@ -81,27 +80,6 @@ class ApplicationDependencies:
         if self._null_probe_adapter is None:
             raise KeyError("no dependency named 'probe_adapter'")
         return self._null_probe_adapter
-
-    async def ensure_schema(self) -> None:
-        """Conservative dev-only helper for local scratch databases.
-
-        This is intentionally not called during normal application startup. The
-        server expects the Alembic migration chain to already have been applied
-        before it starts; if the required tables are missing it should fail
-        fast rather than silently recreating a schema that can drift away from
-        the migration state.
-
-        The only supported use for this method is ad-hoc scratch databases used
-        by developers locally, where the table shape is meant to follow
-        ``Base`` directly and nobody is relying on Alembic history.
-        """
-        if self.engine is None:
-            raise RuntimeError(
-                "cannot ensure the schema: dependencies were built without "
-                "a database engine"
-            )
-        async with self.engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
 
     async def dispose(self) -> None:
         """Release the database connection pool."""
