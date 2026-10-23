@@ -28,15 +28,11 @@ so a fresh database is brought to head automatically. Running
 `alembic upgrade head` first remains a safe no-op and is still what a deploy
 pipeline should do; the runtime repeats the same upgrade against the same
 `Config` URL and aborts startup if it fails rather than serving a partially
-migrated schema. The schema itself still comes only from the migration chain,
-never from `Base.metadata.create_all()`.
-
-If you only want a throwaway local database for quick experiments, the
-dependency container still has a dev-only helper,
-`ApplicationDependencies.ensure_schema`, but it is **not** called by the
-application. Its intended use is ad-hoc scratch databases where you want the
-table shape to follow the ORM models directly and nobody is relying on Alembic
-history. Do not use it as a substitute for `alembic upgrade head`.
+migrated schema. Tables come only from the migration chain — nothing in the
+application calls `Base.metadata.create_all()` — so there is no ORM fallback to
+drift away from the migration history. For a throwaway database, point
+`Config` at a new file and let startup apply the chain, or run
+`alembic upgrade head` yourself.
 
 ## Migrations
 
