@@ -157,3 +157,8 @@ jobs:
 
           asyncio.run(main())
           PY
+
+      - name: Readiness endpoints on Postgres
+        run: |
+          export DEPLOYCTL_TEST_DATABASE_URL="$DATABASE_URL"
+          pytest -q deployctl/tests/test_readiness_endpoint.py
