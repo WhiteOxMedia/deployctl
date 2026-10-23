@@ -7,6 +7,7 @@ depend on a stable readiness contract without owning probe mechanics.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 from deployctl.adapters.probe import ProbeAdapter
@@ -53,6 +54,9 @@ class ReadinessController:
             deployment_id=deployment_id,
             status=status,
             details=probe_result.get("detail"),
+            observed_at=datetime.now(UTC),
+            scope_id=scope_id,
+            source_id=source_id,
         )
         await self._readiness_repository.save(record)
         return record
