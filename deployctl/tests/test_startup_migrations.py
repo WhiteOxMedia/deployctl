@@ -21,6 +21,7 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.engine import make_url
 
 from deployctl.app import server as server_module
 from deployctl.app.config import Config
@@ -200,8 +201,14 @@ def test_failing_startup_migration_aborts_before_serving(
         with TestClient(app):
             pass
 
-    # The operator-facing error names the database and keeps the cause.
-    assert database_url in str(excinfo.value)
+    # The operator-facing error names the database and keeps the cause. A
+    # server URL carries credentials, and the message renders it redacted, so
+    # the comparison goes through the same renderer the server uses.
+    message = str(excinfo.value)
+    assert server_module.describe_database_url(database_url) in message
+    password = make_url(database_url).password
+    if password is not None:
+        assert password not in message
     assert isinstance(excinfo.value.__cause__, RuntimeError)
 
     assert asyncio.run(alembic_revision(database_url)) == "001"
