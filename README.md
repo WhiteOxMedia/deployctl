@@ -203,6 +203,31 @@ SQLite serializes writers, so its `deployment-create` throughput reflects the
 single-writer lock; the health and lookup scenarios still measure the real
 server and pool. Use Postgres for numbers worth comparing between runs.
 
+### Keeping pull requests up to date
+
+`master` requires branches to be up to date before merging, so every pull
+request that is still open when another one merges falls behind and needs an
+update. `.github/workflows/update-stale-prs.yml` does that automatically: on
+each push to `master` it rebases the open pull requests whose branch is behind,
+which re-runs CI on the new head and clears the requirement. It can also be
+started by hand from the Actions tab.
+
+Pushes made with the workflow's own token do not start new workflow runs, so an
+update made that way would leave the pull request waiting for checks that never
+arrive. The job therefore uses a separate token and does nothing until one is
+configured. Create a fine-grained personal access token scoped to this
+repository with `Contents: read and write` and `Pull requests: read and write`,
+then store it as the `PR_UPDATE_TOKEN` Actions secret:
+
+```bash
+gh secret set PR_UPDATE_TOKEN --repo <owner>/<repo>
+```
+
+Without that secret the job skips every branch and says so in the run summary.
+Branches that live in a fork are always skipped, since their authors own the
+push. A branch that cannot be rebased cleanly (real conflicts) is reported as
+needing a human rather than being forced.
+
 ## Overriding the database URL for migrations and the app
 
 The app uses `deployctl.app.config.Config` for its database URL. The same URL
