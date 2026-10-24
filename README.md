@@ -225,8 +225,9 @@ gh secret set PR_UPDATE_TOKEN --repo <owner>/<repo>
 
 Without that secret the job skips every branch and says so in the run summary.
 Branches that live in a fork are always skipped, since their authors own the
-push. A branch that cannot be rebased cleanly (real conflicts) is reported as
-needing a human rather than being forced.
+push. A branch that cannot be rebased cleanly (real conflicts) is not forced:
+the job leaves a comment on the pull request saying how to resolve it, and a
+later failure refreshes that same comment instead of adding another.
 
 ## Overriding the database URL for migrations and the app
 
