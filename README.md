@@ -165,6 +165,44 @@ The readiness contract tests are intentionally migration-driven. They apply the
 Alembic chain to a fresh SQLite database, run the API against it, and also
 assert that downgrading back to `001` removes the `readiness` table cleanly.
 
+### Load testing (opt-in)
+
+`deployctl/tests/test_load.py` starts a real uvicorn server on a loopback port
+and drives three scenarios with the engine's connection pool in play: the
+database-backed health probe, deployment creation, and deployment lookup. It
+reports wall-clock throughput and p50/p95/p99 latency per scenario
+(`-s` shows the table on a passing run; pytest otherwise captures it):
+
+```bash
+.venv/bin/pytest -q -m load -s
+```
+
+The test carries the `load` marker, which the default run excludes, so a plain
+`pytest -q` leaves it out. The scenario size is configurable:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `DEPLOYCTL_LOAD_CONCURRENCY` | `8` | closed-loop clients per scenario |
+| `DEPLOYCTL_LOAD_REQUESTS` | `100` | measured requests per scenario |
+| `DEPLOYCTL_LOAD_WARMUP` | `3` | untimed requests before timing starts |
+| `DEPLOYCTL_LOAD_REPORT` | unset | write the table as Markdown to this path |
+
+A dedicated `loadtest` CI job runs the harness against `postgres:17` on every
+push to `master` and every pull request; the `validate` and `postgres` jobs
+still skip it. It publishes the table in the run summary and uploads it as the
+`load-report` artifact.
+
+Point the suite at a server database as usual and the same run measures that
+database instead of the throwaway SQLite file:
+
+```bash
+DEPLOYCTL_TEST_DATABASE_URL=postgresql+asyncpg://... .venv/bin/pytest -q -m load -s
+```
+
+SQLite serializes writers, so its `deployment-create` throughput reflects the
+single-writer lock; the health and lookup scenarios still measure the real
+server and pool. Use Postgres for numbers worth comparing between runs.
+
 ## Overriding the database URL for migrations and the app
 
 The app uses `deployctl.app.config.Config` for its database URL. The same URL
