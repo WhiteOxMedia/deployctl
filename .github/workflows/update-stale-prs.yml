@@ -7,7 +7,7 @@ on:
 
 permissions:
   contents: read
-  pull-requests: read
+  pull-requests: write
 
 concurrency:
   group: update-stale-pull-requests
@@ -41,6 +41,10 @@ jobs:
             exit 0
           fi
 
+          # Marks the comment this job owns, so a repeated failure refreshes
+          # that one comment instead of adding another.
+          marker='<!-- update-stale-prs:behind -->'
+
           {
             echo "### Stale pull request branches"
             echo
@@ -56,13 +60,36 @@ jobs:
             if [ "$is_fork" = "true" ]; then
               echo "- #${number}: branch lives in a fork, left to its author" >> "$GITHUB_STEP_SUMMARY"
               skipped=$((skipped + 1))
-            elif gh pr update-branch "$number" --rebase >/dev/null 2>&1; then
+              continue
+            fi
+
+            if gh pr update-branch "$number" --rebase >/dev/null 2>&1; then
               echo "- #${number}: rebased onto \`${BASE_BRANCH}\`" >> "$GITHUB_STEP_SUMMARY"
               updated=$((updated + 1))
-            else
-              echo "- #${number}: could not rebase automatically (conflicts), needs a human" >> "$GITHUB_STEP_SUMMARY"
-              needs_human=$((needs_human + 1))
+              continue
             fi
+
+            body="$(printf '%s\n%s\n\n%s\n' \
+              "${marker}" \
+              "This branch is behind \`${BASE_BRANCH}\` and could not be updated automatically, most likely because the rebase hit conflicts." \
+              "Merge \`${BASE_BRANCH}\` into this branch or rebase onto it, resolve any conflicts, and push. CI runs again on the new head.")"
+
+            comment_id="$(
+              gh api "repos/${GH_REPO}/issues/${number}/comments" --paginate \
+                --jq '.[] | select(.body | contains("<!-- update-stale-prs:behind -->")) | .id' |
+                head -n 1
+            )"
+
+            if [ -n "$comment_id" ]; then
+              gh api -X PATCH "repos/${GH_REPO}/issues/comments/${comment_id}" \
+                -f body="$body" >/dev/null
+              echo "- #${number}: could not rebase; refreshed the conflict note" >> "$GITHUB_STEP_SUMMARY"
+            else
+              gh pr comment "$number" --body "$body" >/dev/null
+              echo "- #${number}: could not rebase; asked the author to resolve the conflicts" >> "$GITHUB_STEP_SUMMARY"
+            fi
+
+            needs_human=$((needs_human + 1))
           done < <(
             gh pr list \
               --base "$BASE_BRANCH" \
