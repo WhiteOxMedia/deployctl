@@ -1,0 +1,140 @@
+name: Update stale pull requests
+
+on:
+  push:
+    branches: ["master"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: update-stale-pull-requests
+  cancel-in-progress: false
+
+jobs:
+  update-branches:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Rebase branches that fell behind master
+        env:
+          GH_TOKEN: ${{ secrets.PR_UPDATE_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          BASE_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+
+          # A branch updated with the automatic token never starts CI, so the
+          # pull request would wait for checks that are never reported. Rather
+          # than leave it in that state, do nothing and say why.
+          if [ -z "${GH_TOKEN:-}" ]; then
+            {
+              echo "### Stale pull request branches"
+              echo
+              echo "Skipped: the \`PR_UPDATE_TOKEN\` secret is not set."
+              echo "Updates made with the workflow token do not trigger CI, so"
+              echo "the branches were left for their authors to update."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning title=PR_UPDATE_TOKEN is not set::Stale pull requests were not updated."
+            exit 0
+          fi
+
+          # Marks the comment this job owns, so a repeated failure refreshes
+          # that one comment instead of adding another.
+          marker='<!-- update-stale-prs:behind -->'
+
+          updated=0
+          skipped=0
+          needs_human=0
+          cleared=0
+
+          note_id() {
+            gh api "repos/${GH_REPO}/issues/${1}/comments" --paginate \
+              --jq '.[] | select(.body | contains("<!-- update-stale-prs:behind -->")) | .id' |
+              head -n 1
+          }
+
+          leave_note() {
+            local number="$1" comment_id body
+            body="$(
+              printf '%s\n%s\n\n%s\n' \
+                "${marker}" \
+                "\`${BASE_BRANCH}\` has moved and this branch could not be brought up to date automatically, most likely because it conflicts with \`${BASE_BRANCH}\`." \
+                "Merge \`${BASE_BRANCH}\` into this branch (or rebase onto it), resolve any conflicts, and push. CI runs again on the new head and clears the up-to-date requirement."
+            )"
+
+            comment_id="$(note_id "$number")"
+
+            if [ -n "$comment_id" ]; then
+              gh api -X PATCH "repos/${GH_REPO}/issues/comments/${comment_id}" \
+                -f body="$body" >/dev/null
+              echo "- #${number}: could not update; refreshed the existing note" >> "$GITHUB_STEP_SUMMARY"
+            else
+              gh pr comment "$number" --body "$body" >/dev/null
+              echo "- #${number}: could not update; asked the author to resolve the conflicts" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          }
+
+          # A note describes a state that can go away; once the branch is current
+          # again it is stale and misleading, so remove it.
+          clear_note() {
+            local number="$1" comment_id
+            comment_id="$(note_id "$number")"
+            [ -n "$comment_id" ] || return 0
+            gh api -X DELETE "repos/${GH_REPO}/issues/comments/${comment_id}" >/dev/null
+            echo "- #${number}: branch is current again; removed the earlier note" >> "$GITHUB_STEP_SUMMARY"
+            cleared=$((cleared + 1))
+          }
+
+          {
+            echo "### Stale pull request branches"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          while read -r number is_fork state; do
+            [ -n "$number" ] || continue
+
+            if [ "$is_fork" = "true" ]; then
+              echo "- #${number}: branch lives in a fork, left to its author" >> "$GITHUB_STEP_SUMMARY"
+              skipped=$((skipped + 1))
+              continue
+            fi
+
+            # A branch that conflicts with the base is reported as DIRTY, not
+            # BEHIND; no update is possible until someone resolves it.
+            if [ "$state" = "DIRTY" ]; then
+              leave_note "$number"
+              needs_human=$((needs_human + 1))
+              continue
+            fi
+
+            if [ "$state" = "BEHIND" ]; then
+              if gh pr update-branch "$number" --rebase >/dev/null 2>&1; then
+                echo "- #${number}: rebased onto \`${BASE_BRANCH}\`" >> "$GITHUB_STEP_SUMMARY"
+                updated=$((updated + 1))
+                clear_note "$number"
+              else
+                leave_note "$number"
+                needs_human=$((needs_human + 1))
+              fi
+              continue
+            fi
+
+            # Anything else (CLEAN, UNSTABLE, BLOCKED, ...) is up to date with
+            # the base, so an earlier warning about being stale no longer holds.
+            clear_note "$number"
+          done < <(
+            gh pr list \
+              --base "$BASE_BRANCH" \
+              --state open \
+              --limit 100 \
+              --json number,isCrossRepository,mergeStateStatus \
+              --jq '.[] | "\(.number) \(.isCrossRepository) \(.mergeStateStatus)"'
+          )
+
+          {
+            echo
+            echo "Updated ${updated}, skipped ${skipped}, needed a human ${needs_human}, cleared ${cleared} notes."
+          } >> "$GITHUB_STEP_SUMMARY"
