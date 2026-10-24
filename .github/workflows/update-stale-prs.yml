@@ -45,34 +45,14 @@ jobs:
           # that one comment instead of adding another.
           marker='<!-- update-stale-prs:behind -->'
 
-          {
-            echo "### Stale pull request branches"
-            echo
-          } >> "$GITHUB_STEP_SUMMARY"
-
-          updated=0
-          skipped=0
-          needs_human=0
-
-          while read -r number is_fork; do
-            [ -n "$number" ] || continue
-
-            if [ "$is_fork" = "true" ]; then
-              echo "- #${number}: branch lives in a fork, left to its author" >> "$GITHUB_STEP_SUMMARY"
-              skipped=$((skipped + 1))
-              continue
-            fi
-
-            if gh pr update-branch "$number" --rebase >/dev/null 2>&1; then
-              echo "- #${number}: rebased onto \`${BASE_BRANCH}\`" >> "$GITHUB_STEP_SUMMARY"
-              updated=$((updated + 1))
-              continue
-            fi
-
-            body="$(printf '%s\n%s\n\n%s\n' \
-              "${marker}" \
-              "This branch is behind \`${BASE_BRANCH}\` and could not be updated automatically, most likely because the rebase hit conflicts." \
-              "Merge \`${BASE_BRANCH}\` into this branch or rebase onto it, resolve any conflicts, and push. CI runs again on the new head.")"
+          leave_note() {
+            local number="$1" comment_id body
+            body="$(
+              printf '%s\n%s\n\n%s\n' \
+                "${marker}" \
+                "\`${BASE_BRANCH}\` has moved and this branch could not be brought up to date automatically, most likely because it conflicts with \`${BASE_BRANCH}\`." \
+                "Merge \`${BASE_BRANCH}\` into this branch (or rebase onto it), resolve any conflicts, and push. CI runs again on the new head and clears the up-to-date requirement."
+            )"
 
             comment_id="$(
               gh api "repos/${GH_REPO}/issues/${number}/comments" --paginate \
@@ -83,12 +63,46 @@ jobs:
             if [ -n "$comment_id" ]; then
               gh api -X PATCH "repos/${GH_REPO}/issues/comments/${comment_id}" \
                 -f body="$body" >/dev/null
-              echo "- #${number}: could not rebase; refreshed the conflict note" >> "$GITHUB_STEP_SUMMARY"
+              echo "- #${number}: could not update; refreshed the existing note" >> "$GITHUB_STEP_SUMMARY"
             else
               gh pr comment "$number" --body "$body" >/dev/null
-              echo "- #${number}: could not rebase; asked the author to resolve the conflicts" >> "$GITHUB_STEP_SUMMARY"
+              echo "- #${number}: could not update; asked the author to resolve the conflicts" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          }
+
+          {
+            echo "### Stale pull request branches"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          updated=0
+          skipped=0
+          needs_human=0
+
+          while read -r number is_fork state; do
+            [ -n "$number" ] || continue
+
+            if [ "$is_fork" = "true" ]; then
+              echo "- #${number}: branch lives in a fork, left to its author" >> "$GITHUB_STEP_SUMMARY"
+              skipped=$((skipped + 1))
+              continue
             fi
 
+            # A branch that conflicts with the base is reported as DIRTY, not
+            # BEHIND; no update is possible until someone resolves it.
+            if [ "$state" = "DIRTY" ]; then
+              leave_note "$number"
+              needs_human=$((needs_human + 1))
+              continue
+            fi
+
+            if gh pr update-branch "$number" --rebase >/dev/null 2>&1; then
+              echo "- #${number}: rebased onto \`${BASE_BRANCH}\`" >> "$GITHUB_STEP_SUMMARY"
+              updated=$((updated + 1))
+              continue
+            fi
+
+            leave_note "$number"
             needs_human=$((needs_human + 1))
           done < <(
             gh pr list \
@@ -96,7 +110,7 @@ jobs:
               --state open \
               --limit 100 \
               --json number,isCrossRepository,mergeStateStatus \
-              --jq '.[] | select(.mergeStateStatus == "BEHIND") | "\(.number) \(.isCrossRepository)"'
+              --jq '.[] | select(.mergeStateStatus == "BEHIND" or .mergeStateStatus == "DIRTY") | "\(.number) \(.isCrossRepository) \(.mergeStateStatus)"'
           )
 
           {
