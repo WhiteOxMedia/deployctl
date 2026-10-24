@@ -228,7 +228,8 @@ Branches that live in a fork are always skipped, since their authors own the
 push. A branch that conflicts with `master` is never forced: the job leaves a
 comment on the pull request explaining how to resolve it, and a later run
 refreshes that same comment instead of adding another. The same note is left
-when a rebase that looked clean still fails.
+when a rebase that looked clean still fails. Once the branch is current again
+the note is deleted, so it never outlives the problem it described.
 
 ## Overriding the database URL for migrations and the app
 
