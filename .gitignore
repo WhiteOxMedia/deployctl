@@ -85,7 +85,14 @@ test_scout_app_lifecycle.py
 verify_scout_push_client.py
 installer/
 scout/
-pool/
+pool/*
+!pool/static/
+# workspace-only clutter inside pool/static (the Pro gate files above
+# are tracked: CI runs them)
+pool/static/_probe_write.txt
+pool/static/admin_cold_wallet.js
+pool/static/scout_ids.test.js
+pool/static/scout_paywall_freeze_and_unfreeze.js
 monero_project/
 schemas/
 domain/

@@ -1,0 +1,69 @@
+name: Scout Pro gate
+
+# Fails the build if the Pro bridge ever answers with a hard-coded "locked"
+# (or a hard-coded "unlocked"): the bridge suite asserts the real state file
+# unlocks every Pro surface, and the negative control at the end proves the
+# same suite rejects a bridge whose answer is a constant.
+
+on:
+  push:
+    branches: ["main", "master"]
+  pull_request:
+    branches: ["main", "master"]
+
+permissions:
+  contents: read
+
+jobs:
+  pro-bridge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Pro bridge suite (unlocked state must unlock every surface)
+        env:
+          SCOUT_APP_STATE_FILE: pool/static/fixtures/scout_app_unlocked.json
+        run: node --test pool/static/scout_pro_bridge.test.mjs
+
+      - name: Host loader suite (state file -> bridge -> rendered UI)
+        env:
+          SCOUT_APP_STATE_FILE: pool/static/fixtures/scout_app_unlocked.json
+        run: node --test pool/static/scout_host.test.mjs
+
+      - name: Negative control — a hard-coded locked bridge must fail
+        run: |
+          set -u
+          mut="$(mktemp -d)"
+          cp pool/static/scout_pro_bridge.test.mjs "$mut/"
+          cp -r pool/static/fixtures "$mut/fixtures"
+          node - "$mut/scout_pro_bridge.js" <<'JS'
+          const fs = require("fs");
+          const [out] = process.argv.slice(2);
+          const src = fs.readFileSync("pool/static/scout_pro_bridge.js", "utf8");
+          const marker = "export function evaluateScoutPro(state, nowMs) {";
+          if (!src.includes(marker)) {
+            console.error("cannot find evaluateScoutPro to mutate");
+            process.exit(2);
+          }
+          fs.writeFileSync(
+            out,
+            src.replace(
+              marker,
+              marker +
+                '\n  return { unlocked: false, reason: "hard-coded locked",' +
+                " until: null, who: null, features: [] };"
+            )
+          );
+          JS
+          if SCOUT_APP_STATE_FILE="$mut/fixtures/scout_app_unlocked.json" \
+               node --test "$mut/scout_pro_bridge.test.mjs" > /tmp/hardcoded.log 2>&1; then
+            cat /tmp/hardcoded.log
+            echo "::error::the Pro gate suite passed against a hard-coded locked bridge"
+            exit 1
+          fi
+          echo "negative control ok: a hard-coded locked bridge fails the suite"
+          grep -m3 "not ok" /tmp/hardcoded.log || true

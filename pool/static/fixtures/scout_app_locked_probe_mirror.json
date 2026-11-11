@@ -1,0 +1,27 @@
+{
+  "first_launch": false,
+  "miner_opt_in": false,
+  "miner_opt_in_at": null,
+  "pro_unlocked": false,
+  "pro_until": 0,
+  "nfty_enabled": false,
+  "profile_sync_enabled": false,
+  "watchdog_routing_enabled": false,
+  "calibrated": true,
+  "calibration": {
+    "steps": [],
+    "current": null,
+    "progress": 0
+  },
+  "last_local_alert": {
+    "type": "BUY_NOW",
+    "payload": {
+      "pair": "BTC/USD",
+      "side": "buy",
+      "price": 100
+    },
+    "ts": "2026-10-22T03:29:35.621798+00:00"
+  },
+  "launches": 0,
+  "miner_wallet": "TESTADDR"
+}
