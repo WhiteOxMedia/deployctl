@@ -5,11 +5,12 @@ name: Scout Pro gate
 # unlocks every Pro surface, and the negative control at the end proves the
 # same suite rejects a bridge whose answer is a constant.
 
+# Any push runs the gate: a branch-only change to the bridge must not be
+# able to land without this job having answered for it.
 on:
   push:
-    branches: ["main", "master"]
   pull_request:
-    branches: ["main", "master"]
+  workflow_dispatch:
 
 permissions:
   contents: read
